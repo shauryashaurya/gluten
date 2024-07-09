@@ -53,7 +53,7 @@ abstract class GenerateExecTransformerBase(
       target =>
         val childIndex = child.output.zipWithIndex
           .collectFirst {
-            case (attr, i) if attr.name == target.name => i
+            case (attr, i) if attr.exprId == target.exprId => i
           }
           .getOrElse(
             throw new GlutenException(s"Can't found column ${target.name} in child output"))
@@ -76,8 +76,8 @@ abstract class GenerateExecTransformerBase(
     doNativeValidation(context, relNode)
   }
 
-  override def doTransform(context: SubstraitContext): TransformContext = {
-    val childCtx = child.asInstanceOf[TransformSupport].doTransform(context)
+  override protected def doTransform(context: SubstraitContext): TransformContext = {
+    val childCtx = child.asInstanceOf[TransformSupport].transform(context)
     val relNode = getRelNode(context, childCtx.root, getGeneratorNode(context), validation = false)
     TransformContext(child.output, output, relNode)
   }
