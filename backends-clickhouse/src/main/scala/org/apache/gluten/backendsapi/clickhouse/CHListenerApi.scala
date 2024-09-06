@@ -21,7 +21,9 @@ import org.apache.gluten.backendsapi.ListenerApi
 import org.apache.gluten.execution.CHBroadcastBuildSideCache
 import org.apache.gluten.execution.datasource.{GlutenOrcWriterInjects, GlutenParquetWriterInjects, GlutenRowSplitter}
 import org.apache.gluten.expression.UDFMappings
-import org.apache.gluten.vectorized.{CHNativeExpressionEvaluator, JniLibLoader}
+import org.apache.gluten.extension.ExpressionExtensionTrait
+import org.apache.gluten.jni.JniLibLoader
+import org.apache.gluten.vectorized.CHNativeExpressionEvaluator
 
 import org.apache.spark.{SparkConf, SparkContext}
 import org.apache.spark.api.plugin.PluginContext
@@ -30,6 +32,7 @@ import org.apache.spark.listener.CHGlutenSQLAppStatusListener
 import org.apache.spark.network.util.JavaUtils
 import org.apache.spark.rpc.{GlutenDriverEndpoint, GlutenExecutorEndpoint}
 import org.apache.spark.sql.execution.datasources.v1._
+import org.apache.spark.sql.utils.ExpressionUtil
 import org.apache.spark.util.SparkDirectoryUtil
 
 import org.apache.commons.lang3.StringUtils
@@ -42,6 +45,13 @@ class CHListenerApi extends ListenerApi with Logging {
     GlutenDriverEndpoint.glutenDriverEndpointRef = (new GlutenDriverEndpoint).self
     CHGlutenSQLAppStatusListener.registerListener(sc)
     initialize(pc.conf, isDriver = true)
+
+    val expressionExtensionTransformer = ExpressionUtil.extendedExpressionTransformer(
+      pc.conf.get(GlutenConfig.GLUTEN_EXTENDED_EXPRESSION_TRAN_CONF, "")
+    )
+    if (expressionExtensionTransformer != null) {
+      ExpressionExtensionTrait.expressionExtensionTransformer = expressionExtensionTransformer
+    }
   }
 
   override def onDriverShutdown(): Unit = shutdown()
@@ -83,12 +93,12 @@ class CHListenerApi extends ListenerApi with Logging {
     val externalSortKey = s"${CHBackendSettings.getBackendConfigPrefix}.runtime_settings" +
       s".max_bytes_before_external_sort"
     if (conf.getLong(externalSortKey, -1) < 0) {
-      if (conf.getBoolean("spark.memory.offHeap.enabled", false)) {
-        val memSize = JavaUtils.byteStringAsBytes(conf.get("spark.memory.offHeap.size")).toInt
-        if (memSize > 0) {
-          val cores = conf.getInt("spark.executor.cores", 1)
-          val sortMemLimit = ((memSize / cores) * 0.8).toInt
-          logInfo(s"max memory for sorting: $sortMemLimit")
+      if (conf.getBoolean("spark.memory.offHeap.enabled", defaultValue = false)) {
+        val memSize = JavaUtils.byteStringAsBytes(conf.get("spark.memory.offHeap.size"))
+        if (memSize > 0L) {
+          val cores = conf.getInt("spark.executor.cores", 1).toLong
+          val sortMemLimit = ((memSize / cores) * 0.8).toLong
+          logDebug(s"max memory for sorting: $sortMemLimit")
           conf.set(externalSortKey, sortMemLimit.toString)
         }
       }
@@ -97,8 +107,7 @@ class CHListenerApi extends ListenerApi with Logging {
     // Load supported hive/python/scala udfs
     UDFMappings.loadFromSparkConf(conf)
 
-    val initKernel = new CHNativeExpressionEvaluator()
-    initKernel.initNative(conf)
+    CHNativeExpressionEvaluator.initNative(conf)
 
     // inject backend-specific implementations to override spark classes
     // FIXME: The following set instances twice in local mode?
@@ -110,7 +119,6 @@ class CHListenerApi extends ListenerApi with Logging {
 
   private def shutdown(): Unit = {
     CHBroadcastBuildSideCache.cleanAll()
-    val kernel = new CHNativeExpressionEvaluator()
-    kernel.finalizeNative()
+    CHNativeExpressionEvaluator.finalizeNative()
   }
 }

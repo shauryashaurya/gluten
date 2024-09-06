@@ -29,6 +29,7 @@
 #include <Processors/QueryPlan/ExpressionStep.h>
 #include <Processors/QueryPlan/MergingAggregatedStep.h>
 #include <Common/CHUtil.h>
+#include <Common/GlutenConfig.h>
 
 namespace DB
 {
@@ -167,8 +168,8 @@ void AggregateRelParser::setup(DB::QueryPlanPtr query_plan, const substrait::Rel
 void AggregateRelParser::addPreProjection()
 {
     auto input_header = plan->getCurrentDataStream().header;
-    ActionsDAGPtr projection_action = std::make_shared<ActionsDAG>(input_header.getColumnsWithTypeAndName());
-    std::string dag_footprint = projection_action->dumpDAG();
+    ActionsDAG projection_action{input_header.getColumnsWithTypeAndName()};
+    std::string dag_footprint = projection_action.dumpDAG();
     for (auto & agg_info : aggregates)
     {
         auto arg_nodes = agg_info.function_parser->parseFunctionArguments(agg_info.parser_func_info, projection_action);
@@ -178,14 +179,14 @@ void AggregateRelParser::addPreProjection()
         {
             agg_info.arg_column_names.emplace_back(arg_node->result_name);
             agg_info.arg_column_types.emplace_back(arg_node->result_type);
-            projection_action->addOrReplaceInOutputs(*arg_node);
+            projection_action.addOrReplaceInOutputs(*arg_node);
         }
     }
-    if (projection_action->dumpDAG() != dag_footprint)
+    if (projection_action.dumpDAG() != dag_footprint)
     {
         /// Avoid unnecessary evaluation
-        projection_action->removeUnusedActions();
-        auto projection_step = std::make_unique<DB::ExpressionStep>(plan->getCurrentDataStream(), projection_action);
+        projection_action.removeUnusedActions();
+        auto projection_step = std::make_unique<DB::ExpressionStep>(plan->getCurrentDataStream(), std::move(projection_action));
         projection_step->setStepDescription("Projection before aggregate");
         steps.emplace_back(projection_step.get());
         plan->addStep(std::move(projection_step));
@@ -194,7 +195,8 @@ void AggregateRelParser::addPreProjection()
 
 void AggregateRelParser::buildAggregateDescriptions(AggregateDescriptions & descriptions)
 {
-    auto build_result_column_name = [](const String & function_name, const Array & params, const Strings & arg_names, substrait::AggregationPhase phase)
+    const auto & current_plan_header = plan->getCurrentDataStream().header;
+    auto build_result_column_name = [this, current_plan_header](const String & function_name, const Array & params, const Strings & arg_names, substrait::AggregationPhase phase)
     {
         if (phase == substrait::AggregationPhase::AGGREGATION_PHASE_INTERMEDIATE_TO_RESULT)
         {
@@ -218,7 +220,12 @@ void AggregateRelParser::buildAggregateDescriptions(AggregateDescriptions & desc
         result += "(";
         result += boost::algorithm::join(arg_names, ",");
         result += ")";
-        return result;
+        // Make the name unique to avoid name collision(issue #6878).
+        auto res = this->getUniqueName(result);
+        // Just a check for remining this issue.
+        if (current_plan_header.findByName(res))
+            throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Name ({}) collision in header: {}", res, current_plan_header.dumpStructure());
+        return res;
     };
 
     for (auto & agg_info : aggregates)
@@ -227,6 +234,7 @@ void AggregateRelParser::buildAggregateDescriptions(AggregateDescriptions & desc
         const auto & measure = agg_info.measure->measure();
         description.column_name
             = build_result_column_name(agg_info.function_name, agg_info.params, agg_info.arg_column_names, measure.phase());
+
         agg_info.measure_column_name = description.column_name;
         // std::cout << "description.column_name:" << description.column_name << std::endl;
         description.argument_names = agg_info.arg_column_names;
@@ -287,8 +295,8 @@ void AggregateRelParser::addMergingAggregatedStep()
         settings.max_threads,
         PODArrayUtil::adjustMemoryEfficientSize(settings.max_block_size),
         settings.min_hit_rate_to_use_consecutive_keys_optimization);
-    bool enable_streaming_aggregating = getContext()->getConfigRef().getBool("enable_streaming_aggregating", true);
-    if (enable_streaming_aggregating)
+    auto config = StreamingAggregateConfig::loadFromContext(getContext());
+    if (config.enable_streaming_aggregating)
     {
         params.group_by_two_level_threshold = settings.group_by_two_level_threshold;
         auto merging_step = std::make_unique<GraceMergingAggregatedStep>(getContext(), plan->getCurrentDataStream(), params, false);
@@ -297,9 +305,12 @@ void AggregateRelParser::addMergingAggregatedStep()
     }
     else
     {
+        /// We don't use the grouping set feature in CH, so grouping_sets_params_list should always be empty.
+        DB::GroupingSetsParamsList grouping_sets_params_list;
         auto merging_step = std::make_unique<DB::MergingAggregatedStep>(
             plan->getCurrentDataStream(),
             params,
+            grouping_sets_params_list,
             true,
             false,
             1,
@@ -319,8 +330,8 @@ void AggregateRelParser::addCompleteModeAggregatedStep()
     AggregateDescriptions aggregate_descriptions;
     buildAggregateDescriptions(aggregate_descriptions);
     const auto & settings = getContext()->getSettingsRef();
-    bool enable_streaming_aggregating = getContext()->getConfigRef().getBool("enable_streaming_aggregating", true);
-    if (enable_streaming_aggregating)
+    auto config = StreamingAggregateConfig::loadFromContext(getContext());
+    if (config.enable_streaming_aggregating)
     {
         Aggregator::Params params(
             grouping_keys,
@@ -397,9 +408,9 @@ void AggregateRelParser::addAggregatingStep()
     AggregateDescriptions aggregate_descriptions;
     buildAggregateDescriptions(aggregate_descriptions);
     const auto & settings = getContext()->getSettingsRef();
-    bool enable_streaming_aggregating = getContext()->getConfigRef().getBool("enable_streaming_aggregating", true);
 
-    if (enable_streaming_aggregating)
+    auto config = StreamingAggregateConfig::loadFromContext(getContext());
+    if (config.enable_streaming_aggregating)
     {
         // Disable spilling to disk.
         // If group_by_two_level_threshold_bytes != 0, `Aggregator` will use memory usage as a condition to convert
@@ -481,14 +492,14 @@ void AggregateRelParser::addAggregatingStep()
 void AggregateRelParser::addPostProjection()
 {
     auto input_header = plan->getCurrentDataStream().header;
-    ActionsDAGPtr project_actions_dag = std::make_shared<ActionsDAG>(input_header.getColumnsWithTypeAndName());
-    auto dag_footprint = project_actions_dag->dumpDAG();
+    ActionsDAG project_actions_dag{input_header.getColumnsWithTypeAndName()};
+    auto dag_footprint = project_actions_dag.dumpDAG();
 
     if (has_final_stage)
     {
         for (const auto & agg_info : aggregates)
         {
-            for (const auto * input_node : project_actions_dag->getInputs())
+            for (const auto * input_node : project_actions_dag.getInputs())
             {
                 if (input_node->result_name == agg_info.measure_column_name)
                 {
@@ -502,7 +513,7 @@ void AggregateRelParser::addPostProjection()
         // on the complete mode, it must consider the nullability when converting node type
         for (const auto & agg_info : aggregates)
         {
-            for (const auto * output_node : project_actions_dag->getOutputs())
+            for (const auto * output_node : project_actions_dag.getOutputs())
             {
                 if (output_node->result_name == agg_info.measure_column_name)
                 {
@@ -511,9 +522,9 @@ void AggregateRelParser::addPostProjection()
             }
         }
     }
-    if (project_actions_dag->dumpDAG() != dag_footprint)
+    if (project_actions_dag.dumpDAG() != dag_footprint)
     {
-        QueryPlanStepPtr convert_step = std::make_unique<ExpressionStep>(plan->getCurrentDataStream(), project_actions_dag);
+        QueryPlanStepPtr convert_step = std::make_unique<ExpressionStep>(plan->getCurrentDataStream(), std::move(project_actions_dag));
         convert_step->setStepDescription("Post-projection for aggregate");
         steps.emplace_back(convert_step.get());
         plan->addStep(std::move(convert_step));

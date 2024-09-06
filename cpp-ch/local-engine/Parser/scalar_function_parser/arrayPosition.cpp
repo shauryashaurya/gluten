@@ -14,10 +14,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <Parser/FunctionParser.h>
-#include <DataTypes/IDataType.h>
-#include <Common/CHUtil.h>
 #include <Core/Field.h>
+#include <DataTypes/IDataType.h>
+#include <Parser/FunctionParser.h>
+#include <Common/BlockTypeUtils.h>
+#include <Common/CHUtil.h>
 
 namespace DB
 {
@@ -42,7 +43,7 @@ public:
 
     const ActionsDAG::Node * parse(
         const substrait::Expression_ScalarFunction & substrait_func,
-        ActionsDAGPtr & actions_dag) const override
+        ActionsDAG & actions_dag) const override
     {
         /**
             parse array_position(arr, value) as
@@ -58,7 +59,7 @@ public:
             2. CH indexOf function cannot accept Nullable(Array()) type as first argument
         */
 
-        auto parsed_args = parseFunctionArguments(substrait_func, "", actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         if (parsed_args.size() != 2)
             throw Exception(DB::ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Function {} requires exactly two arguments", getName());
 
@@ -85,14 +86,14 @@ public:
         DataTypePtr wrap_arr_nullable_type = wrapNullableType(true, ch_function_node->result_type);
 
         const auto * wrap_index_of_node = ActionsDAGUtil::convertNodeType(
-            actions_dag, ch_function_node, wrap_arr_nullable_type->getName(), ch_function_node->result_name);
+            actions_dag, ch_function_node, wrap_arr_nullable_type, ch_function_node->result_name);
         const auto * null_const_node = addColumnToActionsDAG(actions_dag, wrap_arr_nullable_type, Field{});
         const auto * or_condition_node = toFunctionNode(actions_dag, "or", {arr_is_null_node, val_is_null_node});
 
         const auto * if_node = toFunctionNode(actions_dag, "if", {or_condition_node, null_const_node, wrap_index_of_node});
         return convertNodeTypeIfNeeded(substrait_func, if_node, actions_dag);
     }
-protected:
+
     String getCHFunctionName(const substrait::Expression_ScalarFunction & /*substrait_func*/) const override
     {
         return "indexOf";

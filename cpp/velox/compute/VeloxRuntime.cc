@@ -28,9 +28,9 @@
 #include "compute/VeloxPlanConverter.h"
 #include "config/VeloxConfig.h"
 #include "operators/serializer/VeloxRowToColumnarConverter.h"
-#include "shuffle/VeloxHashBasedShuffleWriter.h"
+#include "shuffle/VeloxHashShuffleWriter.h"
+#include "shuffle/VeloxRssSortShuffleWriter.h"
 #include "shuffle/VeloxShuffleReader.h"
-#include "shuffle/VeloxSortBasedShuffleWriter.h"
 #include "utils/ConfigExtractor.h"
 #include "utils/VeloxArrowUtils.h"
 
@@ -62,7 +62,8 @@ VeloxRuntime::VeloxRuntime(
     : Runtime(std::make_shared<VeloxMemoryManager>(std::move(listener)), confMap) {
   // Refresh session config.
   vmm_ = dynamic_cast<VeloxMemoryManager*>(memoryManager_.get());
-  veloxCfg_ = std::make_shared<facebook::velox::core::MemConfig>(confMap_);
+  veloxCfg_ =
+      std::make_shared<facebook::velox::config::ConfigBase>(std::unordered_map<std::string, std::string>(confMap_));
   debugModeEnabled_ = veloxCfg_->get<bool>(kDebugModeEnabled, false);
   FLAGS_minloglevel = veloxCfg_->get<uint32_t>(kGlogSeverityLevel, FLAGS_minloglevel);
   FLAGS_v = veloxCfg_->get<uint32_t>(kGlogVerboseLevel, FLAGS_v);
@@ -157,9 +158,9 @@ std::shared_ptr<ResultIterator> VeloxRuntime::createResultIterator(
   return std::make_shared<ResultIterator>(std::move(wholestageIter), this);
 }
 
-std::shared_ptr<ColumnarToRowConverter> VeloxRuntime::createColumnar2RowConverter() {
+std::shared_ptr<ColumnarToRowConverter> VeloxRuntime::createColumnar2RowConverter(int64_t column2RowMemThreshold) {
   auto veloxPool = vmm_->getLeafMemoryPool();
-  return std::make_shared<VeloxColumnarToRowConverter>(veloxPool);
+  return std::make_shared<VeloxColumnarToRowConverter>(veloxPool, column2RowMemThreshold);
 }
 
 std::shared_ptr<ColumnarBatch> VeloxRuntime::createOrGetEmptySchemaBatch(int32_t numRows) {
@@ -270,7 +271,7 @@ std::unique_ptr<ColumnarBatchSerializer> VeloxRuntime::createColumnarBatchSerial
 }
 
 void VeloxRuntime::dumpConf(const std::string& path) {
-  const auto& backendConfMap = VeloxBackend::get()->getBackendConf()->values();
+  const auto& backendConfMap = VeloxBackend::get()->getBackendConf()->rawConfigs();
   auto allConfMap = backendConfMap;
 
   for (const auto& pair : confMap_) {

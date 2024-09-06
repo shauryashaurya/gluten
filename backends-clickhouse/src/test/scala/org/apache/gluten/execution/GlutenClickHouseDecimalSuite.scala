@@ -66,10 +66,10 @@ class GlutenClickHouseDecimalSuite
   private val decimalTable: String = "decimal_table"
   private val decimalTPCHTables: Seq[(DecimalType, Seq[Int])] = Seq.apply(
     (DecimalType.apply(9, 4), Seq()),
-    // 1: ch decimal avg is float
     (DecimalType.apply(18, 8), Seq()),
-    // 1: ch decimal avg is float, 3/10: all value is null and compare with limit
-    (DecimalType.apply(38, 19), Seq(3, 10))
+    // 3/10: all value is null and compare with limit
+    // 1 Spark 3.5
+    (DecimalType.apply(38, 19), if (isSparkVersionLE("3.3")) Seq(3, 10) else Seq(1, 3, 10))
   )
 
   private def createDecimalTables(dataType: DecimalType): Unit = {
@@ -343,27 +343,18 @@ class GlutenClickHouseDecimalSuite
               decimalTPCHTables.foreach {
                 dt =>
                   {
+                    val compareResult = !dt._2.contains(sql_num)
+                    val compare = if (compareResult) "compare" else "noCompare"
+                    val PrecisionLoss = s"allowPrecisionLoss=$allowPrecisionLoss"
                     val decimalType = dt._1
                     test(s"""TPCH Decimal(${decimalType.precision},${decimalType.scale})
-                            | Q$sql_num[allowPrecisionLoss=$allowPrecisionLoss]""".stripMargin) {
-                      var noFallBack = true
-                      var compareResult = true
-                      if (sql_num == 16 || sql_num == 21) {
-                        noFallBack = false
-                      }
-
-                      if (dt._2.contains(sql_num)) {
-                        compareResult = false
-                      }
-
+                            | Q$sql_num[$PrecisionLoss,native,$compare]""".stripMargin) {
                       spark.sql(s"use decimal_${decimalType.precision}_${decimalType.scale}")
                       withSQLConf(
                         (SQLConf.DECIMAL_OPERATIONS_ALLOW_PREC_LOSS.key, allowPrecisionLoss)) {
-                        runTPCHQuery(
-                          sql_num,
-                          tpchQueries,
-                          compareResult = compareResult,
-                          noFallBack = noFallBack) { _ => {} }
+                        runTPCHQuery(sql_num, tpchQueries, compareResult = compareResult) {
+                          _ => {}
+                        }
                       }
                       spark.sql(s"use default")
                     }

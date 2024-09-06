@@ -338,7 +338,7 @@ void RangeSelectorBuilder::initActionsDAG(const DB::Block & block)
         exprs.emplace_back(expression);
 
     auto projection_actions_dag = plan_parser.expressionsToActionsDAG(exprs, block, block);
-    projection_expression_actions = std::make_unique<DB::ExpressionActions>(projection_actions_dag);
+    projection_expression_actions = std::make_unique<DB::ExpressionActions>(std::move(projection_actions_dag));
     has_init_actions_dag = true;
 }
 
@@ -367,19 +367,31 @@ void RangeSelectorBuilder::computePartitionIdByBinarySearch(DB::Block & block, D
         selector.emplace_back(selected_partition);
     }
 }
+namespace {
+int doCompareAt(const ColumnPtr & lhs, size_t n, size_t m, const IColumn & rhs, int nan_direction_hint)
+{
+    if (const auto * l_const = typeid_cast<const ColumnConst *>(lhs.get()))
+    {
+        // we know rhs never be Const
+        chassert(l_const->getDataType() == rhs.getDataType());
+        return l_const->getDataColumn().compareAt(0, m, rhs, nan_direction_hint);
+    }
+    return lhs->compareAt(n, m, rhs, nan_direction_hint);
+}
+}
 
 int RangeSelectorBuilder::compareRow(
     const DB::Columns & columns,
     const std::vector<size_t> & required_columns,
     size_t row,
     const DB::Columns & bound_columns,
-    size_t bound_row)
+    size_t bound_row) const
 {
     for (size_t i = 0, n = required_columns.size(); i < n; ++i)
     {
         auto lpos = required_columns[i];
         auto rpos = i;
-        auto res = columns[lpos]->compareAt(row, bound_row, *bound_columns[rpos], sort_descriptions[i].nulls_direction)
+        auto res = doCompareAt(columns[lpos], row, bound_row, *bound_columns[rpos], sort_descriptions[i].nulls_direction)
             * sort_descriptions[i].direction;
         if (res != 0)
             return res;

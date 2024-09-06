@@ -15,16 +15,18 @@
  * limitations under the License.
  */
 
-#include <Parser/FunctionParser.h>
-#include <Common/Exception.h>
-#include <Poco/Logger.h>
-#include <Common/logger_useful.h>
-#include <Common/CHUtil.h>
+#include <Core/Types.h>
+#include <DataTypes/DataTypeArray.h>
 #include <DataTypes/DataTypeFunction.h>
 #include <DataTypes/DataTypeNullable.h>
-#include <Core/Types.h>
+#include <Parser/FunctionParser.h>
 #include <Parser/TypeParser.h>
 #include <Parser/scalar_function_parser/lambdaFunction.h>
+#include <Poco/Logger.h>
+#include <Common/BlockTypeUtils.h>
+#include <Common/CHUtil.h>
+#include <Common/Exception.h>
+#include <Common/logger_useful.h>
 
 namespace DB::ErrorCodes
 {
@@ -47,11 +49,11 @@ public:
         return "arrayFilter";
     }
 
-    const DB::ActionsDAG::Node * parse(const substrait::Expression_ScalarFunction & substrait_func,
-        DB::ActionsDAGPtr & actions_dag) const
+    const DB::ActionsDAG::Node *
+    parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
     {
         auto ch_func_name = getCHFunctionName(substrait_func);
-        auto parsed_args = parseFunctionArguments(substrait_func, ch_func_name, actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 2);
         if (collectLambdaArguments(*plan_parser, substrait_func.arguments()[1].value().scalar_function()).size() == 1)
             return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], parsed_args[0]});
@@ -59,7 +61,7 @@ public:
         /// filter with index argument.
         const auto * range_end_node = toFunctionNode(actions_dag, "length", {toFunctionNode(actions_dag, "assumeNotNull", {parsed_args[0]})});
         range_end_node = ActionsDAGUtil::convertNodeType(
-            actions_dag, range_end_node, "Nullable(Int32)", range_end_node->result_name);
+            actions_dag, range_end_node, makeNullable(INT()), range_end_node->result_name);
         const auto * index_array_node = toFunctionNode(
             actions_dag,
             "range",
@@ -81,22 +83,31 @@ public:
         return "arrayMap";
     }
 
-    const DB::ActionsDAG::Node * parse(const substrait::Expression_ScalarFunction & substrait_func,
-        DB::ActionsDAGPtr & actions_dag) const
+    const DB::ActionsDAG::Node *
+    parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
     {
         auto ch_func_name = getCHFunctionName(substrait_func);
         auto lambda_args = collectLambdaArguments(*plan_parser, substrait_func.arguments()[1].value().scalar_function());
-        auto parsed_args = parseFunctionArguments(substrait_func, ch_func_name, actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 2);
         if (lambda_args.size() == 1)
         {
-            return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], parsed_args[0]});
+            /// Convert Array(T) to Array(U) if needed, Array(T) is the type of the first argument of transform.
+            /// U is the argument type of lambda function. In some cases Array(T) is not equal to Array(U).
+            /// e.g. in the second query of https://github.com/apache/incubator-gluten/issues/6561, T is String, and U is Nullable(String)
+            /// The difference of both types will result in runtime exceptions in function capture.
+            const auto & src_array_type = parsed_args[0]->result_type;
+            DataTypePtr dst_array_type = std::make_shared<DataTypeArray>(lambda_args.front().type);
+            if (isNullableOrLowCardinalityNullable(src_array_type))
+                dst_array_type = std::make_shared<DataTypeNullable>(dst_array_type);
+            const auto * dst_array_arg = ActionsDAGUtil::convertNodeTypeIfNeeded(actions_dag, parsed_args[0], dst_array_type);
+            return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], dst_array_arg});
         }
 
         /// transform with index argument.
         const auto * range_end_node = toFunctionNode(actions_dag, "length", {toFunctionNode(actions_dag, "assumeNotNull", {parsed_args[0]})});
         range_end_node = ActionsDAGUtil::convertNodeType(
-            actions_dag, range_end_node, "Nullable(Int32)", range_end_node->result_name);
+            actions_dag, range_end_node, makeNullable(INT()), range_end_node->result_name);
         const auto * index_array_node = toFunctionNode(
             actions_dag,
             "range",
@@ -117,11 +128,11 @@ public:
     {
         return "arrayFold";
     }
-    const DB::ActionsDAG::Node * parse(const substrait::Expression_ScalarFunction & substrait_func,
-        DB::ActionsDAGPtr & actions_dag) const
+    const DB::ActionsDAG::Node *
+    parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
     {
         auto ch_func_name = getCHFunctionName(substrait_func);
-        auto parsed_args = parseFunctionArguments(substrait_func, ch_func_name, actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 3);
         const auto * function_type = typeid_cast<const DataTypeFunction *>(parsed_args[2]->result_type.get());
         if (!function_type)
@@ -131,7 +142,7 @@ public:
             parsed_args[1] = ActionsDAGUtil::convertNodeType(
                 actions_dag,
                 parsed_args[1],
-                function_type->getReturnType()->getName(),
+                function_type->getReturnType(),
                 parsed_args[1]->result_name);
         }
 
@@ -162,11 +173,11 @@ public:
     {
         return "arraySortSpark";
     }
-    const DB::ActionsDAG::Node * parse(const substrait::Expression_ScalarFunction & substrait_func,
-        DB::ActionsDAGPtr & actions_dag) const
+    const DB::ActionsDAG::Node *
+    parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
     {
         auto ch_func_name = getCHFunctionName(substrait_func);
-        auto parsed_args = parseFunctionArguments(substrait_func, ch_func_name, actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
 
         if (parsed_args.size() != 2)
             throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "array_sort function must have two arguments");
@@ -205,14 +216,14 @@ private:
             if (!var_expr.has_literal())
                 return false;
             auto [_, name] = plan_parser->parseLiteral(var_expr.literal());
-            return var == name.get<String>();
+            return var == name.safeGet<String>();
         };
 
         auto is_int_value = [&](const substrait::Expression & expr, Int32 val) {
             if (!expr.has_literal())
                 return false;
             auto [_, x] = plan_parser->parseLiteral(expr.literal());
-            return val == x.get<Int32>();
+            return val == x.safeGet<Int32>();
         };
 
         auto is_variable_null = [&](const substrait::Expression & expr, const String & var) {

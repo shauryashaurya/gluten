@@ -15,14 +15,48 @@
  * limitations under the License.
  */
 #pragma once
+#include <Common/GlutenConfig.h>
+#include <Common/MergeTreeTool.h>
 #include <Poco/LRUCache.h>
 #include <Parser/SerializedPlanParser.h>
 #include <Storages/CustomStorageMergeTree.h>
 #include <Interpreters/MergeTreeTransaction.h>
 
+
 namespace local_engine
 {
 using CustomStorageMergeTreePtr = std::shared_ptr<CustomStorageMergeTree>;
+
+class DataPartStorageHolder
+{
+public:
+    DataPartStorageHolder(const DataPartPtr& data_part, const CustomStorageMergeTreePtr& storage)
+        : data_part_(data_part),
+          storage_(storage)
+    {
+    }
+
+    [[nodiscard]] DataPartPtr dataPart() const
+    {
+        return data_part_;
+    }
+
+    [[nodiscard]] CustomStorageMergeTreePtr storage() const
+    {
+        return storage_;
+    }
+
+    ~DataPartStorageHolder()
+    {
+        storage_->removePartFromMemory(*data_part_);
+        // std::cerr << fmt::format("clean part {}", data_part_->name) << std::endl;
+    }
+
+private:
+    DataPartPtr data_part_;
+    CustomStorageMergeTreePtr storage_;
+};
+using DataPartStorageHolderPtr = std::shared_ptr<DataPartStorageHolder>;
 
 class StorageMergeTreeFactory
 {
@@ -30,15 +64,15 @@ public:
     static StorageMergeTreeFactory & instance();
     static void freeStorage(const StorageID & id, const String & snapshot_id = "");
     static CustomStorageMergeTreePtr
-    getStorage(StorageID id, const String & snapshot_id, std::function<CustomStorageMergeTreePtr()> creator);
+    getStorage(const StorageID& id, const String & snapshot_id, MergeTreeTable merge_tree_table, std::function<CustomStorageMergeTreePtr()> creator);
     static DataPartsVector getDataPartsByNames(const StorageID & id, const String & snapshot_id, std::unordered_set<String> part_name);
     static void init_cache_map()
     {
+        auto config = MergeTreeConfig::loadFromContext(SerializedPlanParser::global_context);
         auto & storage_map_v = storage_map;
         if (!storage_map_v)
         {
-            storage_map_v = std::make_unique<Poco::LRUCache<std::string, CustomStorageMergeTreePtr>>(
-                SerializedPlanParser::global_context->getConfigRef().getInt64("table_metadata_cache_max_count", 100));
+            storage_map_v = std::make_unique<Poco::LRUCache<std::string, std::pair<CustomStorageMergeTreePtr, MergeTreeTable>>>(config.table_metadata_cache_max_count);
         }
         else
         {
@@ -47,8 +81,8 @@ public:
         auto & datapart_map_v = datapart_map;
         if (!datapart_map_v)
         {
-            datapart_map_v = std::make_unique<Poco::LRUCache<std::string, std::shared_ptr<Poco::LRUCache<std::string, DataPartPtr>>>>(
-                SerializedPlanParser::global_context->getConfigRef().getInt64("table_metadata_cache_max_count", 100));
+            datapart_map_v = std::make_unique<Poco::LRUCache<std::string, std::shared_ptr<Poco::LRUCache<std::string, DataPartStorageHolderPtr>>>>(
+                config.table_metadata_cache_max_count);
         }
         else
         {
@@ -64,10 +98,11 @@ public:
     static String getTableName(const StorageID & id, const String & snapshot_id);
 
 private:
-    static std::unique_ptr<Poco::LRUCache<std::string, CustomStorageMergeTreePtr>> storage_map;
-    static std::unique_ptr<Poco::LRUCache<std::string, std::shared_ptr<Poco::LRUCache<std::string, DataPartPtr>>>> datapart_map;
-    static std::mutex storage_map_mutex;
-    static std::mutex datapart_mutex;
+    static std::unique_ptr<Poco::LRUCache<std::string, std::pair<CustomStorageMergeTreePtr, MergeTreeTable>>> storage_map;
+    static std::unique_ptr<Poco::LRUCache<std::string, std::shared_ptr<Poco::LRUCache<std::string, DataPartStorageHolderPtr>>>> datapart_map;
+
+    static std::recursive_mutex storage_map_mutex;
+    static std::recursive_mutex datapart_mutex;
 };
 
 struct TempStorageFreer

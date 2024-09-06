@@ -159,6 +159,20 @@ case class EncodeDecodeValidator() extends FunctionValidator {
   }
 }
 
+case class ArrayJoinValidator() extends FunctionValidator {
+  override def doValidate(expr: Expression): Boolean = expr match {
+    case t: ArrayJoin => !t.children.head.isInstanceOf[Literal]
+    case _ => true
+  }
+}
+
+case class FormatStringValidator() extends FunctionValidator {
+  override def doValidate(expr: Expression): Boolean = {
+    val formatString = expr.asInstanceOf[FormatString]
+    formatString.children.head.isInstanceOf[Literal]
+  }
+}
+
 object CHExpressionUtil {
 
   final val CH_AGGREGATE_FUNC_BLACKLIST: Map[String, FunctionValidator] = Map(
@@ -167,7 +181,7 @@ object CHExpressionUtil {
   )
 
   final val CH_BLACKLIST_SCALAR_FUNCTION: Map[String, FunctionValidator] = Map(
-    ARRAY_JOIN -> DefaultValidator(),
+    ARRAY_JOIN -> ArrayJoinValidator(),
     SPLIT_PART -> DefaultValidator(),
     TO_UNIX_TIMESTAMP -> UnixTimeStampValidator(),
     UNIX_TIMESTAMP -> UnixTimeStampValidator(),
@@ -181,19 +195,16 @@ object CHExpressionUtil {
     DATE_FORMAT -> DateFormatClassValidator(),
     DECODE -> EncodeDecodeValidator(),
     ENCODE -> EncodeDecodeValidator(),
-    ARRAY_EXCEPT -> DefaultValidator(),
     ARRAY_REPEAT -> DefaultValidator(),
     ARRAY_REMOVE -> DefaultValidator(),
     ARRAYS_ZIP -> DefaultValidator(),
     DATE_FROM_UNIX_DATE -> DefaultValidator(),
-    UNIX_DATE -> DefaultValidator(),
-    UNIX_SECONDS -> DefaultValidator(),
     MONOTONICALLY_INCREASING_ID -> DefaultValidator(),
     SPARK_PARTITION_ID -> DefaultValidator(),
     URL_DECODE -> DefaultValidator(),
     URL_ENCODE -> DefaultValidator(),
+    FORMAT_STRING -> FormatStringValidator(),
     SKEWNESS -> DefaultValidator(),
-    SOUNDEX -> DefaultValidator(),
     MAKE_YM_INTERVAL -> DefaultValidator(),
     MAP_ZIP_WITH -> DefaultValidator(),
     ZIP_WITH -> DefaultValidator(),
@@ -204,10 +215,11 @@ object CHExpressionUtil {
     REGR_SXY -> DefaultValidator(),
     TO_UTC_TIMESTAMP -> UtcTimestampValidator(),
     FROM_UTC_TIMESTAMP -> UtcTimestampValidator(),
-    UNIX_MILLIS -> DefaultValidator(),
-    UNIX_MICROS -> DefaultValidator(),
     TIMESTAMP_MILLIS -> DefaultValidator(),
     TIMESTAMP_MICROS -> DefaultValidator(),
-    STACK -> DefaultValidator()
+    STACK -> DefaultValidator(),
+    TRANSFORM_KEYS -> DefaultValidator(),
+    TRANSFORM_VALUES -> DefaultValidator(),
+    RAISE_ERROR -> DefaultValidator()
   )
 }

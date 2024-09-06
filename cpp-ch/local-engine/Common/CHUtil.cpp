@@ -16,11 +16,12 @@
  */
 
 #include "CHUtil.h"
+
 #include <filesystem>
-#include <format>
 #include <memory>
 #include <optional>
 #include <unistd.h>
+
 #include <AggregateFunctions/Combinators/AggregateFunctionCombinatorFactory.h>
 #include <AggregateFunctions/registerAggregateFunctions.h>
 #include <Columns/ColumnArray.h>
@@ -50,17 +51,19 @@
 #include <Interpreters/JIT/CompiledExpressionCache.h>
 #include <Parser/RelParser.h>
 #include <Parser/SerializedPlanParser.h>
+#include <Planner/PlannerActionsVisitor.h>
 #include <Processors/Chunk.h>
+#include <Processors/QueryPlan/ExpressionStep.h>
 #include <Processors/QueryPlan/QueryPlan.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
 #include <QueryPipeline/printPipeline.h>
+#include <Storages/Cache/CacheManager.h>
 #include <Storages/Output/WriteBufferBuilder.h>
 #include <Storages/StorageMergeTreeFactory.h>
 #include <Storages/SubstraitSource/ReadBufferBuilder.h>
 #include <boost/algorithm/string/case_conv.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <google/protobuf/util/json_util.h>
-#include <google/protobuf/wrappers.pb.h>
 #include <sys/resource.h>
 #include <Poco/Logger.h>
 #include <Poco/Util/MapConfiguration.h>
@@ -84,8 +87,6 @@ extern const int CANNOT_PARSE_PROTOBUF_SCHEMA;
 
 namespace local_engine
 {
-constexpr auto VIRTUAL_ROW_COUNT_COLUMN = "__VIRTUAL_ROW_COUNT_COLUMN__";
-
 namespace fs = std::filesystem;
 
 DB::Block BlockUtil::buildRowCountHeader()
@@ -126,6 +127,27 @@ DB::Block BlockUtil::buildHeader(const DB::NamesAndTypesList & names_types_list)
         cols.emplace_back(col);
     }
     return DB::Block(cols);
+}
+
+/// The column names may be different in two blocks.
+/// and the nullability also could be different, with TPCDS-Q1 as an example.
+DB::ColumnWithTypeAndName
+BlockUtil::convertColumnAsNecessary(const DB::ColumnWithTypeAndName & column, const DB::ColumnWithTypeAndName & sample_column)
+{
+    if (sample_column.type->equals(*column.type))
+        return {column.column, column.type, sample_column.name};
+    else if (sample_column.type->isNullable() && !column.type->isNullable() && DB::removeNullable(sample_column.type)->equals(*column.type))
+    {
+        auto nullable_column = column;
+        DB::JoinCommon::convertColumnToNullable(nullable_column);
+        return {nullable_column.column, sample_column.type, sample_column.name};
+    }
+    else
+        throw DB::Exception(
+            DB::ErrorCodes::LOGICAL_ERROR,
+            "Columns have different types. original:{} expected:{}",
+            column.dumpStructure(),
+            sample_column.dumpStructure());
 }
 
 /**
@@ -440,22 +462,37 @@ const DB::ColumnWithTypeAndName * NestedColumnExtractHelper::findColumn(const DB
 }
 
 const DB::ActionsDAG::Node * ActionsDAGUtil::convertNodeType(
-    DB::ActionsDAGPtr & actions_dag,
+    DB::ActionsDAG & actions_dag,
     const DB::ActionsDAG::Node * node,
-    const std::string & type_name,
+    const DataTypePtr & cast_to_type,
     const std::string & result_name,
     CastType cast_type)
 {
     DB::ColumnWithTypeAndName type_name_col;
-    type_name_col.name = type_name;
+    type_name_col.name = cast_to_type->getName();
     type_name_col.column = DB::DataTypeString().createColumnConst(0, type_name_col.name);
     type_name_col.type = std::make_shared<DB::DataTypeString>();
-    const auto * right_arg = &actions_dag->addColumn(std::move(type_name_col));
+    const auto * right_arg = &actions_dag.addColumn(std::move(type_name_col));
     const auto * left_arg = node;
     DB::CastDiagnostic diagnostic = {node->result_name, node->result_name};
+    ColumnWithTypeAndName left_column{nullptr, node->result_type, {}};
     DB::ActionsDAG::NodeRawConstPtrs children = {left_arg, right_arg};
-    return &actions_dag->addFunction(
-        DB::createInternalCastOverloadResolver(cast_type, std::move(diagnostic)), std::move(children), result_name);
+    auto func_base_cast = createInternalCast(std::move(left_column), cast_to_type, cast_type, diagnostic);
+
+    return &actions_dag.addFunction(func_base_cast, std::move(children), result_name);
+}
+
+const DB::ActionsDAG::Node * ActionsDAGUtil::convertNodeTypeIfNeeded(
+    DB::ActionsDAG & actions_dag,
+    const DB::ActionsDAG::Node * node,
+    const DB::DataTypePtr & dst_type,
+    const std::string & result_name,
+    CastType cast_type)
+{
+    if (node->result_type->equals(*dst_type))
+        return node;
+
+    return convertNodeType(actions_dag, node, dst_type, result_name, cast_type);
 }
 
 String QueryPipelineUtil::explainPipeline(DB::QueryPipeline & pipeline)
@@ -468,7 +505,7 @@ String QueryPipelineUtil::explainPipeline(DB::QueryPipeline & pipeline)
 
 using namespace DB;
 
-std::map<std::string, std::string> BackendInitializerUtil::getBackendConfMap(const std::string_view plan)
+std::map<std::string, std::string> BackendInitializerUtil::getBackendConfMap(std::string_view plan)
 {
     std::map<std::string, std::string> ch_backend_conf;
     if (plan.empty())
@@ -477,8 +514,8 @@ std::map<std::string, std::string> BackendInitializerUtil::getBackendConfMap(con
     /// Parse backend configs from plan extensions
     do
     {
-        auto plan_ptr = std::make_unique<substrait::Plan>();
-        auto success = plan_ptr->ParseFromString(plan);
+        substrait::Plan sPlan;
+        auto success = sPlan.ParseFromString(plan);
         if (!success)
             break;
 
@@ -487,15 +524,15 @@ std::map<std::string, std::string> BackendInitializerUtil::getBackendConfMap(con
             namespace pb_util = google::protobuf::util;
             pb_util::JsonOptions options;
             std::string json;
-            auto s = pb_util::MessageToJsonString(*plan_ptr, &json, options);
+            auto s = pb_util::MessageToJsonString(sPlan, &json, options);
             if (!s.ok())
                 throw Exception(ErrorCodes::LOGICAL_ERROR, "Can not convert Substrait Plan to Json");
             LOG_DEBUG(&Poco::Logger::get("CHUtil"), "Update Config Map Plan:\n{}", json);
         }
 
-        if (!plan_ptr->has_advanced_extensions() || !plan_ptr->advanced_extensions().has_enhancement())
+        if (!sPlan.has_advanced_extensions() || !sPlan.advanced_extensions().has_enhancement())
             break;
-        const auto & enhancement = plan_ptr->advanced_extensions().enhancement();
+        const auto & enhancement = sPlan.advanced_extensions().enhancement();
 
         if (!enhancement.Is<substrait::Expression>())
             break;
@@ -536,8 +573,20 @@ std::vector<String> BackendInitializerUtil::wrapDiskPathConfig(
     std::vector<String> changed_paths;
     if (path_prefix.empty() && path_suffix.empty())
         return changed_paths;
+
+    auto change_func = [&](String key) -> void
+    {
+        if (const String value = config.getString(key, ""); value != "")
+        {
+            const String change_value = path_prefix + value + path_suffix;
+            config.setString(key, change_value);
+            changed_paths.emplace_back(change_value);
+            LOG_INFO(getLogger("BackendInitializerUtil"), "Change config `{}` from '{}' to {}.", key, value, change_value);
+        }
+    };
+
     Poco::Util::AbstractConfiguration::Keys disks;
-    std::unordered_set<String> disk_types = {"s3", "hdfs_gluten", "cache"};
+    std::unordered_set<String> disk_types = {"s3_gluten", "hdfs_gluten", "cache"};
     config.keys("storage_configuration.disks", disks);
 
     std::ranges::for_each(
@@ -549,26 +598,14 @@ std::vector<String> BackendInitializerUtil::wrapDiskPathConfig(
             if (!disk_types.contains(disk_type))
                 return;
             if (disk_type == "cache")
-            {
-                String path = config.getString(disk_prefix + ".path", "");
-                if (!path.empty())
-                {
-                    String final_path = path_prefix + path + path_suffix;
-                    config.setString(disk_prefix + ".path", final_path);
-                    changed_paths.emplace_back(final_path);
-                }
-            }
-            else if (disk_type == "s3" || disk_type == "hdfs_gluten")
-            {
-                String metadata_path = config.getString(disk_prefix + ".metadata_path", "");
-                if (!metadata_path.empty())
-                {
-                    String final_path = path_prefix + metadata_path + path_suffix;
-                    config.setString(disk_prefix + ".metadata_path", final_path);
-                    changed_paths.emplace_back(final_path);
-                }
-            }
+                change_func(disk_prefix + ".path");
+            else if (disk_type == "s3_gluten" || disk_type == "hdfs_gluten")
+                change_func(disk_prefix + ".metadata_path");
         });
+
+    change_func("path");
+    change_func("gluten_cache.local.path");
+
     return changed_paths;
 }
 
@@ -608,7 +645,7 @@ DB::Context::ConfigurationPtr BackendInitializerUtil::initConfig(std::map<std::s
 
     if (backend_conf_map.contains(GLUTEN_TASK_OFFHEAP))
     {
-        config->setString(CH_TASK_MEMORY, backend_conf_map.at(GLUTEN_TASK_OFFHEAP));
+        config->setString(MemoryConfig::CH_TASK_MEMORY, backend_conf_map.at(GLUTEN_TASK_OFFHEAP));
     }
 
     const bool use_current_directory_as_tmp = config->getBool("use_current_directory_as_tmp", false);
@@ -747,7 +784,6 @@ void BackendInitializerUtil::initSettings(std::map<std::string, std::string> & b
     settings.set("input_format_parquet_import_nested", true);
     settings.set("input_format_json_read_numbers_as_strings", true);
     settings.set("input_format_json_read_bools_as_numbers", false);
-    settings.set("input_format_json_ignore_key_case", true);
     settings.set("input_format_csv_trim_whitespaces", false);
     settings.set("input_format_csv_allow_cr_end_of_line", true);
     settings.set("output_format_orc_string_as_string", true);
@@ -762,6 +798,8 @@ void BackendInitializerUtil::initSettings(std::map<std::string, std::string> & b
     settings.set("function_json_value_return_type_allow_complex", true);
     settings.set("function_json_value_return_type_allow_nullable", true);
     settings.set("precise_float_parsing", true);
+    settings.set("enable_named_columns_in_function_tuple", false);
+
     if (backend_conf_map.contains(GLUTEN_TASK_OFFHEAP))
     {
         auto task_memory = std::stoull(backend_conf_map.at(GLUTEN_TASK_OFFHEAP));
@@ -823,7 +861,7 @@ void BackendInitializerUtil::initContexts(DB::Context::ConfigurationPtr config)
         size_t index_uncompressed_cache_size = config->getUInt64("index_uncompressed_cache_size", DEFAULT_INDEX_UNCOMPRESSED_CACHE_MAX_SIZE);
         double index_uncompressed_cache_size_ratio = config->getDouble("index_uncompressed_cache_size_ratio", DEFAULT_INDEX_UNCOMPRESSED_CACHE_SIZE_RATIO);
         global_context->setIndexUncompressedCache(index_uncompressed_cache_policy, index_uncompressed_cache_size, index_uncompressed_cache_size_ratio);
-        
+
         String index_mark_cache_policy = config->getString("index_mark_cache_policy", DEFAULT_INDEX_MARK_CACHE_POLICY);
         size_t index_mark_cache_size = config->getUInt64("index_mark_cache_size", DEFAULT_INDEX_MARK_CACHE_MAX_SIZE);
         double index_mark_cache_size_ratio = config->getDouble("index_mark_cache_size_ratio", DEFAULT_INDEX_MARK_CACHE_SIZE_RATIO);
@@ -914,8 +952,7 @@ void BackendInitializerUtil::initCompiledExpressionCache(DB::Context::Configurat
 #endif
 }
 
-
-void BackendInitializerUtil::init(const std::string & plan)
+void BackendInitializerUtil::init(const std::string_view plan)
 {
     std::map<std::string, std::string> backend_conf_map = getBackendConfMap(plan);
     DB::Context::ConfigurationPtr config = initConfig(backend_conf_map);
@@ -941,6 +978,9 @@ void BackendInitializerUtil::init(const std::string & plan)
 
     // Init the table metadata cache map
     StorageMergeTreeFactory::init_cache_map();
+
+    JobScheduler::initialize(SerializedPlanParser::global_context);
+    CacheManager::initialize(SerializedPlanParser::global_context);
 
     std::call_once(
         init_flag,
@@ -973,14 +1013,14 @@ void BackendInitializerUtil::init(const std::string & plan)
         });
 }
 
-void BackendInitializerUtil::updateConfig(const DB::ContextMutablePtr & context, const std::string_view plan)
+void BackendInitializerUtil::updateConfig(const DB::ContextMutablePtr & context, std::string_view plan)
 {
     std::map<std::string, std::string> backend_conf_map = getBackendConfMap(plan);
 
     // configs cannot be updated per query
     // settings can be updated per query
 
-    auto settings = context->getSettings(); // make a copy
+    auto settings = context->getSettingsCopy(); // make a copy
     initSettings(backend_conf_map, settings);
     updateNewSettings(context, settings);
 }
@@ -1030,17 +1070,6 @@ String DateTimeUtil::convertTimeZone(const String & time_zone)
     return res;
 }
 
-UInt64 MemoryUtil::getCurrentMemoryUsage(size_t depth)
-{
-    Int64 current_memory_usage = 0;
-    auto * current_mem_tracker = DB::CurrentThread::getMemoryTracker();
-    for (size_t i = 0; i < depth && current_mem_tracker; ++i)
-        current_mem_tracker = current_mem_tracker->getParent();
-    if (current_mem_tracker)
-        current_memory_usage = current_mem_tracker->get();
-    return current_memory_usage < 0 ? 0 : current_memory_usage;
-}
-
 UInt64 MemoryUtil::getMemoryRSS()
 {
     long rss = 0L;
@@ -1052,6 +1081,59 @@ UInt64 MemoryUtil::getMemoryRSS()
     fscanf(fp, "%*s%ld", &rss);
     fclose(fp);
     return rss * sysconf(_SC_PAGESIZE);
+}
+
+
+void JoinUtil::reorderJoinOutput(DB::QueryPlan & plan, DB::Names cols)
+{
+    ActionsDAG project{plan.getCurrentDataStream().header.getNamesAndTypesList()};
+    NamesWithAliases project_cols;
+    for (const auto & col : cols)
+    {
+        project_cols.emplace_back(NameWithAlias(col, col));
+    }
+    project.project(project_cols);
+    QueryPlanStepPtr project_step = std::make_unique<ExpressionStep>(plan.getCurrentDataStream(), std::move(project));
+    project_step->setStepDescription("Reorder Join Output");
+    plan.addStep(std::move(project_step));
+}
+
+std::pair<DB::JoinKind, DB::JoinStrictness>
+JoinUtil::getJoinKindAndStrictness(substrait::JoinRel_JoinType join_type, bool is_existence_join)
+{
+    switch (join_type)
+    {
+        case substrait::JoinRel_JoinType_JOIN_TYPE_INNER:
+            return {DB::JoinKind::Inner, DB::JoinStrictness::All};
+        case substrait::JoinRel_JoinType_JOIN_TYPE_LEFT_SEMI: {
+            if (is_existence_join)
+                return {DB::JoinKind::Left, DB::JoinStrictness::Any};
+            return {DB::JoinKind::Left, DB::JoinStrictness::Semi};
+        }
+        case substrait::JoinRel_JoinType_JOIN_TYPE_ANTI:
+            return {DB::JoinKind::Left, DB::JoinStrictness::Anti};
+        case substrait::JoinRel_JoinType_JOIN_TYPE_LEFT:
+            return {DB::JoinKind::Left, DB::JoinStrictness::All};
+        case substrait::JoinRel_JoinType_JOIN_TYPE_RIGHT:
+            return {DB::JoinKind::Right, DB::JoinStrictness::All};
+        case substrait::JoinRel_JoinType_JOIN_TYPE_OUTER:
+            return {DB::JoinKind::Full, DB::JoinStrictness::All};
+        default:
+            throw Exception(ErrorCodes::UNKNOWN_TYPE, "unsupported join type {}.", magic_enum::enum_name(join_type));
+    }
+}
+
+std::pair<DB::JoinKind, DB::JoinStrictness> JoinUtil::getCrossJoinKindAndStrictness(substrait::CrossRel_JoinType join_type)
+{
+    switch (join_type)
+    {
+        case substrait::CrossRel_JoinType_JOIN_TYPE_INNER:
+        case substrait::CrossRel_JoinType_JOIN_TYPE_LEFT:
+        case substrait::CrossRel_JoinType_JOIN_TYPE_OUTER:
+            return {DB::JoinKind::Cross, DB::JoinStrictness::All};
+        default:
+            throw Exception(ErrorCodes::UNKNOWN_TYPE, "unsupported join type {}.", magic_enum::enum_name(join_type));
+    }
 }
 
 }

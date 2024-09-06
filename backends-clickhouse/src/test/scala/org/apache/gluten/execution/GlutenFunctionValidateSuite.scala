@@ -730,4 +730,54 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       runQueryAndCompare(aggregate_sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
     }
   }
+
+  test("test issue: https://github.com/apache/incubator-gluten/issues/6561") {
+    val sql = """
+                |select
+                | map_from_arrays(
+                |   transform(map_keys(map('t1',id,'t2',id+1)), v->v),
+                |   array('a','b')) as b from range(10)
+                |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("test function format_string") {
+    val sql = """
+                | SELECT
+                |  format_string(
+                |    'hello world %d %d %s %f',
+                |    id,
+                |    id,
+                |    CAST(id AS STRING),
+                |    CAST(id AS float)
+                |  )
+                |FROM range(10)
+                |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("test function array_except") {
+    val sql =
+      """
+        |SELECT array_except(array(id, id+1, id+2), array(id+2, id+3))
+        |FROM RANGE(10)
+        |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("test functions unix_seconds/unix_date/unix_millis/unix_micros") {
+    val sql = """
+                |SELECT
+                |  id,
+                |  unix_seconds(cast(concat('2024-09-03 17:23:1',
+                |     cast(id as string)) as timestamp)),
+                |  unix_date(cast(concat('2024-09-1', cast(id as string)) as date)),
+                |  unix_millis(cast(concat('2024-09-03 17:23:10.11',
+                |     cast(id as string)) as timestamp)),
+                |  unix_micros(cast(concat('2024-09-03 17:23:10.12345',
+                |     cast(id as string)) as timestamp))
+                |FROM range(10)
+                |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
 }

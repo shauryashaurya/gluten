@@ -42,14 +42,27 @@ class PartitionWriter : public Reclaimable {
   virtual arrow::Status stop(ShuffleWriterMetrics* metrics) = 0;
 
   /// Evict buffers for `partitionId` partition.
-  virtual arrow::Status evict(
+  virtual arrow::Status hashEvict(
       uint32_t partitionId,
       std::unique_ptr<InMemoryPayload> inMemoryPayload,
       Evict::type evictType,
       bool reuseBuffers,
       bool hasComplexType) = 0;
 
-  virtual arrow::Status evict(uint32_t partitionId, int64_t rawSize, const char* data, int64_t length) = 0;
+  virtual arrow::Status sortEvict(
+      uint32_t partitionId,
+      std::unique_ptr<InMemoryPayload> inMemoryPayload,
+      std::shared_ptr<arrow::Buffer> compressed,
+      bool isFinal) = 0;
+
+  std::optional<int64_t> getCompressedBufferLength(const std::vector<std::shared_ptr<arrow::Buffer>>& buffers) {
+    if (!codec_) {
+      return std::nullopt;
+    }
+    return BlockPayload::maxCompressedLength(buffers, codec_.get());
+  }
+
+  virtual arrow::Status evict(uint32_t partitionId, std::unique_ptr<BlockPayload> blockPayload, bool stop) = 0;
 
   uint64_t cachedPayloadSize() {
     return payloadPool_->bytes_allocated();

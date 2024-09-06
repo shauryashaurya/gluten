@@ -16,7 +16,7 @@
  */
 package org.apache.spark.rpc
 
-import org.apache.gluten.execution.CHBroadcastBuildSideCache
+import org.apache.gluten.execution.{CHBroadcastBuildSideCache, CHNativeCacheManager}
 
 import org.apache.spark.{SparkConf, SparkEnv}
 import org.apache.spark.internal.{config, Logging}
@@ -65,6 +65,34 @@ class GlutenExecutorEndpoint(val executorId: String, val conf: SparkConf)
           resource_id => CHBroadcastBuildSideCache.invalidateBroadcastHashtable(resource_id))
       }
 
+    case e =>
+      logError(s"Received unexpected message. $e")
+  }
+
+  override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
+    case GlutenMergeTreeCacheLoad(mergeTreeTable, columns) =>
+      try {
+        val jobId = CHNativeCacheManager.cacheParts(mergeTreeTable, columns)
+        context.reply(CacheJobInfo(status = true, jobId))
+      } catch {
+        case _: Exception =>
+          context.reply(
+            CacheJobInfo(status = false, "", s"executor: $executorId cache data failed."))
+      }
+    case GlutenCacheLoadStatus(jobId) =>
+      val status = CHNativeCacheManager.getCacheStatus(jobId)
+      context.reply(status)
+    case GlutenFilesCacheLoad(files) =>
+      try {
+        val jobId = CHNativeCacheManager.nativeCacheFiles(files)
+        context.reply(CacheJobInfo(status = true, jobId))
+      } catch {
+        case e: Exception =>
+          context.reply(
+            CacheJobInfo(
+              status = false,
+              s"executor: $executorId cache data failed. ${e.getMessage}"))
+      }
     case e =>
       logError(s"Received unexpected message. $e")
   }

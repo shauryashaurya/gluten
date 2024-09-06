@@ -20,7 +20,9 @@ import org.apache.gluten.GlutenNumaBindingInfo
 import org.apache.gluten.backendsapi.IteratorApi
 import org.apache.gluten.execution._
 import org.apache.gluten.expression.ConverterUtils
+import org.apache.gluten.memory.CHThreadGroup
 import org.apache.gluten.metrics.{IMetrics, NativeMetrics}
+import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.plan.PlanNode
 import org.apache.gluten.substrait.rel._
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
@@ -35,7 +37,7 @@ import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types.{StructField, StructType}
-import org.apache.spark.sql.utils.OASPackageBridge.InputMetricsWrapper
+import org.apache.spark.sql.utils.SparkInputMetricsUtil.InputMetricsWrapper
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import java.lang.{Long => JLong}
@@ -76,12 +78,13 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
         }
         .map(it => new ColumnarNativeIterator(it.asJava).asInstanceOf[GeneralInIterator])
         .asJava
-    new CHNativeExpressionEvaluator().createKernelWithBatchIterator(
+    CHNativeExpressionEvaluator.createKernelWithBatchIterator(
       wsPlan,
       splitInfoByteArray,
       listIterator,
       materializeInput
     )
+
   }
 
   private def createCloseIterator(
@@ -122,7 +125,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       partition: InputPartition,
       partitionSchema: StructType,
       fileFormat: ReadFileFormat,
-      metadataColumnNames: Seq[String]): SplitInfo = {
+      metadataColumnNames: Seq[String],
+      properties: Map[String, String]): SplitInfo = {
     partition match {
       case p: GlutenMergeTreePartition =>
         val partLists = new JArrayList[String]()
@@ -161,6 +165,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
         val paths = new JArrayList[String]()
         val starts = new JArrayList[JLong]()
         val lengths = new JArrayList[JLong]()
+        val fileSizes = new JArrayList[JLong]()
+        val modificationTimes = new JArrayList[JLong]()
         val partitionColumns = new JArrayList[JMap[String, String]]
         f.files.foreach {
           file =>
@@ -170,6 +176,16 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
             // TODO: Support custom partition location
             val partitionColumn = new JHashMap[String, String]()
             partitionColumns.add(partitionColumn)
+            val (fileSize, modificationTime) =
+              SparkShimLoader.getSparkShims.getFileSizeAndModificationTime(file)
+            (fileSize, modificationTime) match {
+              case (Some(size), Some(time)) =>
+                fileSizes.add(JLong.valueOf(size))
+                modificationTimes.add(JLong.valueOf(time))
+              case _ =>
+                fileSizes.add(0)
+                modificationTimes.add(0)
+            }
         }
         val preferredLocations =
           CHAffinity.getFilePartitionLocations(paths.asScala.toArray, f.preferredLocations())
@@ -178,12 +194,13 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
           paths,
           starts,
           lengths,
-          new JArrayList[JLong](),
-          new JArrayList[JLong](),
+          fileSizes,
+          modificationTimes,
           partitionColumns,
           new JArrayList[JMap[String, String]](),
           fileFormat,
-          preferredLocations.toList.asJava
+          preferredLocations.toList.asJava,
+          mapAsJavaMap(properties)
         )
       case _ =>
         throw new UnsupportedOperationException(s"Unsupported input partition: $partition.")
@@ -209,7 +226,6 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
             split match {
               case filesNode: LocalFilesNode =>
                 setFileSchemaForLocalFiles(filesNode, scans(i))
-                filesNode.setFileReadProperties(mapAsJavaMap(scans(i).getProperties))
                 filesNode.getPaths.forEach(f => files += f)
                 filesNode.toProtobuf.toByteArray
               case extensionTableNode: ExtensionTableNode =>
@@ -289,6 +305,11 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       updateNativeMetrics,
       None,
       createNativeIterator(splitInfoByteArray, wsPlan, materializeInput, inputIterators))
+  }
+
+  override def injectWriteFilesTempPath(path: String, fileName: String): Unit = {
+    CHThreadGroup.registerNewThreadGroup()
+    CHNativeExpressionEvaluator.injectWriteFilesTempPath(path, fileName)
   }
 }
 

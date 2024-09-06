@@ -18,9 +18,9 @@ package org.apache.gluten.execution
 
 import org.apache.gluten.columnarbatch.ColumnarBatches
 import org.apache.gluten.exception.GlutenNotSupportException
-import org.apache.gluten.exec.Runtimes
 import org.apache.gluten.extension.ValidationResult
-import org.apache.gluten.utils.iterator.Iterators
+import org.apache.gluten.iterator.Iterators
+import org.apache.gluten.runtime.Runtimes
 import org.apache.gluten.vectorized.NativeColumnarToRowJniWrapper
 
 import org.apache.spark.broadcast.Broadcast
@@ -66,7 +66,7 @@ case class VeloxColumnarToRowExec(child: SparkPlan) extends ColumnarToRowExecBas
               s"VeloxColumnarToRowExec.")
       }
     }
-    ValidationResult.ok
+    ValidationResult.succeeded
   }
 
   override def doExecuteInternal(): RDD[InternalRow] = {
@@ -99,6 +99,22 @@ case class VeloxColumnarToRowExec(child: SparkPlan) extends ColumnarToRowExecBas
 }
 
 object VeloxColumnarToRowExec {
+
+  def toRowIterator(
+      batches: Iterator[ColumnarBatch],
+      output: Seq[Attribute]): Iterator[InternalRow] = {
+    val numOutputRows = new SQLMetric("numOutputRows")
+    val numInputBatches = new SQLMetric("numInputBatches")
+    val convertTime = new SQLMetric("convertTime")
+    toRowIterator(
+      batches,
+      output,
+      numOutputRows,
+      numInputBatches,
+      convertTime
+    )
+  }
+
   def toRowIterator(
       batches: Iterator[ColumnarBatch],
       output: Seq[Attribute],
@@ -147,13 +163,14 @@ object VeloxColumnarToRowExec {
           val rows = batch.numRows()
           val beforeConvert = System.currentTimeMillis()
           val batchHandle = ColumnarBatches.getNativeHandle(batch)
-          val info =
-            jniWrapper.nativeColumnarToRowConvert(c2rId, batchHandle)
+          var info =
+            jniWrapper.nativeColumnarToRowConvert(c2rId, batchHandle, 0)
 
           convertTime += (System.currentTimeMillis() - beforeConvert)
 
           new Iterator[InternalRow] {
             var rowId = 0
+            var baseLength = 0
             val row = new UnsafeRow(cols)
 
             override def hasNext: Boolean = {
@@ -161,7 +178,14 @@ object VeloxColumnarToRowExec {
             }
 
             override def next: UnsafeRow = {
-              val (offset, length) = (info.offsets(rowId), info.lengths(rowId))
+              if (rowId == baseLength + info.lengths.length) {
+                baseLength += info.lengths.length
+                val before = System.currentTimeMillis()
+                info = jniWrapper.nativeColumnarToRowConvert(c2rId, batchHandle, rowId)
+                convertTime += (System.currentTimeMillis() - before)
+              }
+              val (offset, length) =
+                (info.offsets(rowId - baseLength), info.lengths(rowId - baseLength))
               row.pointTo(null, info.memoryAddress + offset, length)
               rowId += 1
               row

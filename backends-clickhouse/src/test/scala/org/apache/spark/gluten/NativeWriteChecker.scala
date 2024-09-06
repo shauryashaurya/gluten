@@ -18,35 +18,76 @@ package org.apache.spark.gluten
 
 import org.apache.gluten.execution.GlutenClickHouseWholeStageTransformerSuite
 
-import org.apache.spark.sql.execution.QueryExecution
+import org.apache.spark.sql.{Dataset, Row}
+import org.apache.spark.sql.execution.{ColumnarWriteFilesExec, QueryExecution}
+import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.FakeRowAdaptor
 import org.apache.spark.sql.util.QueryExecutionListener
 
-trait NativeWriteChecker extends GlutenClickHouseWholeStageTransformerSuite {
+trait NativeWriteChecker
+  extends GlutenClickHouseWholeStageTransformerSuite
+  with AdaptiveSparkPlanHelper {
 
-  def checkNativeWrite(sqlStr: String, checkNative: Boolean): Unit = {
+  private val formats: Seq[String] = Seq("orc", "parquet")
+
+  def withNativeWriteCheck(checkNative: Boolean)(block: => Unit): Unit = {
     var nativeUsed = false
 
     val queryListener = new QueryExecutionListener {
-      override def onFailure(f: String, qe: QueryExecution, e: Exception): Unit = {}
+      override def onFailure(f: String, qe: QueryExecution, e: Exception): Unit = {
+        fail("query failed", e)
+      }
       override def onSuccess(funcName: String, qe: QueryExecution, duration: Long): Unit = {
         if (!nativeUsed) {
-          nativeUsed = if (isSparkVersionGE("3.4")) {
-            false
+          val executedPlan = stripAQEPlan(qe.executedPlan)
+          nativeUsed = if (isSparkVersionGE("3.5")) {
+            executedPlan.find(_.isInstanceOf[ColumnarWriteFilesExec]).isDefined
           } else {
-            qe.executedPlan.find(_.isInstanceOf[FakeRowAdaptor]).isDefined
+            executedPlan.find(_.isInstanceOf[FakeRowAdaptor]).isDefined
           }
         }
       }
     }
-
     try {
       spark.listenerManager.register(queryListener)
-      spark.sql(sqlStr)
+      block
       spark.sparkContext.listenerBus.waitUntilEmpty()
       assertResult(checkNative)(nativeUsed)
     } finally {
       spark.listenerManager.unregister(queryListener)
+    }
+  }
+  def checkInsertQuery(sqlStr: String, checkNative: Boolean): Unit =
+    withNativeWriteCheck(checkNative) {
+      spark.sql(sqlStr)
+    }
+
+  def withDestinationTable(table: String, createTableSql: Option[String] = None)(
+      f: => Unit): Unit = {
+    spark.sql(s"drop table IF EXISTS $table")
+    createTableSql.foreach(spark.sql)
+    f
+  }
+
+  def nativeWrite(f: String => Unit): Unit = {
+    withSQLConf(("spark.gluten.sql.native.writer.enabled", "true")) {
+      formats.foreach(f(_))
+    }
+  }
+
+  def vanillaWrite(block: => Unit): Unit = {
+    withSQLConf(("spark.gluten.sql.native.writer.enabled", "false")) {
+      block
+    }
+  }
+
+  def withSource(df: Dataset[Row], viewName: String, pairs: (String, String)*)(
+      block: => Unit): Unit = {
+    withSQLConf(pairs: _*) {
+      withTempView(viewName) {
+        df.createOrReplaceTempView(viewName)
+        block
+      }
     }
   }
 }

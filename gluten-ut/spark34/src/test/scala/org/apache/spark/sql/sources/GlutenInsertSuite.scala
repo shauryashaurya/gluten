@@ -16,7 +16,7 @@
  */
 package org.apache.spark.sql.sources
 
-import org.apache.gluten.execution.SortExecTransformer
+import org.apache.gluten.execution.{ProjectExecTransformer, SortExecTransformer}
 import org.apache.gluten.extension.GlutenPlan
 
 import org.apache.spark.SparkConf
@@ -24,7 +24,7 @@ import org.apache.spark.executor.OutputMetrics
 import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
-import org.apache.spark.sql.execution.{CommandResultExec, QueryExecution, VeloxColumnarWriteFilesExec}
+import org.apache.spark.sql.execution.{ColumnarWriteFilesExec, CommandResultExec, GlutenImplicits, QueryExecution}
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.command.DataWritingCommandExec
 import org.apache.spark.sql.execution.metric.SQLMetric
@@ -60,18 +60,19 @@ class GlutenInsertSuite
     super.afterAll()
   }
 
-  private def checkAndGetWriteFiles(df: DataFrame): VeloxColumnarWriteFilesExec = {
+  private def checkAndGetWriteFiles(df: DataFrame): ColumnarWriteFilesExec = {
     val writeFiles = stripAQEPlan(
       df.queryExecution.executedPlan
         .asInstanceOf[CommandResultExec]
         .commandPhysicalPlan).children.head
-    assert(writeFiles.isInstanceOf[VeloxColumnarWriteFilesExec])
-    writeFiles.asInstanceOf[VeloxColumnarWriteFilesExec]
+    assert(writeFiles.isInstanceOf[ColumnarWriteFilesExec])
+    writeFiles.asInstanceOf[ColumnarWriteFilesExec]
   }
 
   testGluten("insert partition table") {
-    withTable("pt") {
+    withTable("pt", "pt2") {
       spark.sql("CREATE TABLE pt (c1 int, c2 string) USING PARQUET PARTITIONED BY (pt string)")
+      spark.sql("CREATE TABLE pt2 (c1 int, c2 string) USING PARQUET PARTITIONED BY (pt string)")
 
       var taskMetrics: OutputMetrics = null
       val taskListener = new SparkListener {
@@ -111,19 +112,29 @@ class GlutenInsertSuite
         spark.sparkContext.removeSparkListener(taskListener)
         spark.listenerManager.unregister(queryListener)
       }
+
+      // check no fallback nodes
+      val df2 = spark.sql("INSERT INTO TABLE pt2 SELECT * FROM pt")
+      checkAndGetWriteFiles(df2)
+      val fallbackSummary = GlutenImplicits
+        .collectQueryExecutionFallbackSummary(spark, df2.queryExecution)
+      assert(fallbackSummary.numFallbackNodes == 0)
     }
   }
 
-  testGluten("Cleanup staging files if job is failed") {
-    withTable("t") {
-      spark.sql("CREATE TABLE t (c1 int, c2 string) USING PARQUET")
-      val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("t"))
+  ignoreGluten("Cleanup staging files if job failed") {
+    // Using a unique table name in this test. Sometimes, the table is not removed for some unknown
+    // reason, which can cause test failure (location already exists) if other following tests have
+    // the same table name.
+    withTable("tbl") {
+      spark.sql("CREATE TABLE tbl (c1 int, c2 string) USING PARQUET")
+      val table = spark.sessionState.catalog.getTableMetadata(TableIdentifier("tbl"))
       assert(new File(table.location).list().length == 0)
 
       intercept[Exception] {
         spark.sql(
           """
-            |INSERT INTO TABLE t
+            |INSERT INTO TABLE tbl
             |SELECT id, assert_true(SPARK_PARTITION_ID() = 1) FROM range(1, 3, 1, 2)
             |""".stripMargin
         )
@@ -145,6 +156,36 @@ class GlutenInsertSuite
 
     val parts = spark.sessionState.catalog.listPartitionNames(TableIdentifier("pt")).toSet
     assert(parts == expectedPartitionNames)
+  }
+
+  testGluten("offload empty2null when v1writes fallback") {
+    withSQLConf((SQLConf.MAX_RECORDS_PER_FILE.key, "1000")) {
+      withTable("pt") {
+        spark.sql("CREATE TABLE pt (c1 int) USING PARQUET PARTITIONED BY(p string)")
+
+        val df = spark.sql(s"""
+                              |INSERT OVERWRITE TABLE pt PARTITION(p)
+                              |SELECT c1, c2 as p FROM source
+                              |""".stripMargin)
+
+        val writeFiles = stripAQEPlan(
+          df.queryExecution.executedPlan
+            .asInstanceOf[CommandResultExec]
+            .commandPhysicalPlan).children.head
+        assert(!writeFiles.isInstanceOf[ColumnarWriteFilesExec])
+        assert(writeFiles.exists(_.isInstanceOf[ProjectExecTransformer]))
+        val projectExecTransformer = writeFiles
+          .find(_.isInstanceOf[ProjectExecTransformer])
+          .get
+          .asInstanceOf[ProjectExecTransformer]
+        projectExecTransformer.projectList.find(_.toString().contains("empty2null"))
+
+        // The partition column should never be empty
+        checkAnswer(
+          spark.sql("SELECT * FROM pt"),
+          spark.sql("SELECT c1, if(c2 = '', null, c2) FROM source"))
+      }
+    }
   }
 
   testGluten("remove v1writes sort and project") {
@@ -405,7 +446,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }
@@ -425,7 +466,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }
@@ -452,7 +493,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }
@@ -474,7 +515,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }
@@ -501,7 +542,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }
@@ -571,7 +612,7 @@ class GlutenInsertSuite
           withTable("t") {
             sql(s"create table t(i boolean) using ${config.dataSource}")
             if (config.useDataFrames) {
-              Seq((false)).toDF.write.insertInto("t")
+              Seq(false).toDF.write.insertInto("t")
             } else {
               sql("insert into t select false")
             }

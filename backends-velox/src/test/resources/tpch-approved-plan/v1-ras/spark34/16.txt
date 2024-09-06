@@ -6,19 +6,19 @@ AdaptiveSparkPlan (71)
       +- ^ InputIteratorTransformer (44)
          +- ShuffleQueryStage (42), Statistics(X)
             +- ColumnarExchange (41)
-               +- VeloxAppendBatches (40)
+               +- VeloxResizeBatches (40)
                   +- ^ RegularHashAggregateExecTransformer (38)
                      +- ^ InputIteratorTransformer (37)
                         +- ShuffleQueryStage (35), Statistics(X)
                            +- ColumnarExchange (34)
-                              +- VeloxAppendBatches (33)
+                              +- VeloxResizeBatches (33)
                                  +- ^ ProjectExecTransformer (31)
                                     +- ^ FlushableHashAggregateExecTransformer (30)
                                        +- ^ RegularHashAggregateExecTransformer (29)
                                           +- ^ InputIteratorTransformer (28)
                                              +- ShuffleQueryStage (26), Statistics(X)
                                                 +- ColumnarExchange (25)
-                                                   +- VeloxAppendBatches (24)
+                                                   +- VeloxResizeBatches (24)
                                                       +- ^ ProjectExecTransformer (22)
                                                          +- ^ FlushableHashAggregateExecTransformer (21)
                                                             +- ^ ProjectExecTransformer (20)
@@ -26,14 +26,14 @@ AdaptiveSparkPlan (71)
                                                                   :- ^ InputIteratorTransformer (9)
                                                                   :  +- ShuffleQueryStage (7), Statistics(X)
                                                                   :     +- ColumnarExchange (6)
-                                                                  :        +- VeloxAppendBatches (5)
+                                                                  :        +- VeloxResizeBatches (5)
                                                                   :           +- ^ ProjectExecTransformer (3)
                                                                   :              +- ^ NoopFilter (2)
                                                                   :                 +- ^ Scan parquet (1)
                                                                   +- ^ InputIteratorTransformer (18)
                                                                      +- ShuffleQueryStage (16), Statistics(X)
                                                                         +- ColumnarExchange (15)
-                                                                           +- VeloxAppendBatches (14)
+                                                                           +- VeloxResizeBatches (14)
                                                                               +- ^ ProjectExecTransformer (12)
                                                                                  +- ^ NoopFilter (11)
                                                                                     +- ^ Scan parquet (10)
@@ -82,13 +82,13 @@ Input [2]: [ps_partkey#X, ps_suppkey#X]
 Input [3]: [hash_partition_key#X, ps_partkey#X, ps_suppkey#X]
 Arguments: false
 
-(5) VeloxAppendBatches
+(5) VeloxResizeBatches
 Input [3]: [hash_partition_key#X, ps_partkey#X, ps_suppkey#X]
-Arguments: X
+Arguments: X, X
 
 (6) ColumnarExchange
 Input [3]: [hash_partition_key#X, ps_partkey#X, ps_suppkey#X]
-Arguments: hashpartitioning(ps_partkey#X, 1), ENSURE_REQUIREMENTS, [ps_partkey#X, ps_suppkey#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(ps_partkey#X, 1), ENSURE_REQUIREMENTS, [ps_partkey#X, ps_suppkey#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (7) ShuffleQueryStage
 Output [2]: [ps_partkey#X, ps_suppkey#X]
@@ -119,13 +119,13 @@ Input [4]: [p_partkey#X, p_brand#X, p_type#X, p_size#X]
 Input [5]: [hash_partition_key#X, p_partkey#X, p_brand#X, p_type#X, p_size#X]
 Arguments: false
 
-(14) VeloxAppendBatches
+(14) VeloxResizeBatches
 Input [5]: [hash_partition_key#X, p_partkey#X, p_brand#X, p_type#X, p_size#X]
-Arguments: X
+Arguments: X, X
 
 (15) ColumnarExchange
 Input [5]: [hash_partition_key#X, p_partkey#X, p_brand#X, p_type#X, p_size#X]
-Arguments: hashpartitioning(p_partkey#X, 1), ENSURE_REQUIREMENTS, [p_partkey#X, p_brand#X, p_type#X, p_size#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(p_partkey#X, 1), ENSURE_REQUIREMENTS, [p_partkey#X, p_brand#X, p_type#X, p_size#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (16) ShuffleQueryStage
 Output [4]: [p_partkey#X, p_brand#X, p_type#X, p_size#X]
@@ -162,13 +162,13 @@ Input [4]: [p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
 Arguments: false
 
-(24) VeloxAppendBatches
+(24) VeloxResizeBatches
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
-Arguments: X
+Arguments: X, X
 
 (25) ColumnarExchange
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
-Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, ps_suppkey#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, ps_suppkey#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, ps_suppkey#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, ps_suppkey#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (26) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
@@ -202,13 +202,13 @@ Input [4]: [p_brand#X, p_type#X, p_size#X, count#X]
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
 Arguments: false
 
-(33) VeloxAppendBatches
+(33) VeloxResizeBatches
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
-Arguments: X
+Arguments: X, X
 
 (34) ColumnarExchange
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
-Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, count#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, count#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (35) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, count#X]
@@ -231,13 +231,13 @@ Results [4]: [p_brand#X, p_type#X, p_size#X, count(ps_suppkey#X)#X AS supplier_c
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
 Arguments: false
 
-(40) VeloxAppendBatches
+(40) VeloxResizeBatches
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
-Arguments: X
+Arguments: X, X
 
 (41) ColumnarExchange
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
-Arguments: rangepartitioning(supplier_cnt#X DESC NULLS LAST, p_brand#X ASC NULLS FIRST, p_type#X ASC NULLS FIRST, p_size#X ASC NULLS FIRST, 1), ENSURE_REQUIREMENTS, [plan_id=X], [id=#X]
+Arguments: rangepartitioning(supplier_cnt#X DESC NULLS LAST, p_brand#X ASC NULLS FIRST, p_type#X ASC NULLS FIRST, p_size#X ASC NULLS FIRST, 1), ENSURE_REQUIREMENTS, [plan_id=X], [shuffle_writer_type=hash]
 
 (42) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]

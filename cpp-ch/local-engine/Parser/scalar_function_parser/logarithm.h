@@ -39,11 +39,11 @@ public:
     ~FunctionParserLogBase() override = default;
 
     virtual String getCHFunctionName() const = 0;
-    virtual const DB::ActionsDAG::Node * getParameterLowerBound(ActionsDAGPtr &, const DataTypePtr &) const { return nullptr; }
+    virtual const DB::ActionsDAG::Node * getParameterLowerBound(ActionsDAG &, const DataTypePtr &) const { return nullptr; }
 
     const ActionsDAG::Node * parse(
         const substrait::Expression_ScalarFunction & substrait_func,
-        ActionsDAGPtr & actions_dag) const override
+        ActionsDAG & actions_dag) const override
     {
         /*
             parse log(x) as
@@ -52,7 +52,7 @@ public:
             else
                 log(x)
         */
-        auto parsed_args = parseFunctionArguments(substrait_func, "", actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         if (parsed_args.size() != 1)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Function {} requires exactly one arguments", getName());
 

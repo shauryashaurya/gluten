@@ -16,6 +16,7 @@
  */
 #pragma once
 #include <shared_mutex>
+#include <Core/Joins.h>
 #include <Interpreters/JoinUtils.h>
 #include <Storages/StorageInMemoryMetadata.h>
 
@@ -35,7 +36,7 @@ class StorageJoinFromReadBuffer
 {
 public:
     StorageJoinFromReadBuffer(
-        DB::ReadBuffer & in_,
+        DB::Blocks & data,
         size_t row_count,
         const DB::Names & key_names_,
         bool use_nulls_,
@@ -45,7 +46,11 @@ public:
         const DB::ColumnsDescription & columns_,
         const DB::ConstraintsDescription & constraints_,
         const String & comment,
-        bool overwrite_);
+        bool overwrite_,
+        bool is_null_aware_anti_join_);
+
+    bool has_null_key_value = false;
+    bool is_empty_hash_table = false;
 
     /// The columns' names in right_header may be different from the names in the ColumnsDescription
     /// in the constructor.
@@ -63,10 +68,11 @@ private:
     std::shared_mutex join_mutex;
     std::list<DB::Block> input_blocks;
     std::shared_ptr<DB::HashJoin> join = nullptr;
+    bool is_null_aware_anti_join;
 
     void readAllBlocksFromInput(DB::ReadBuffer & in);
-    void buildJoin(DB::ReadBuffer & in, const DB::Block header, std::shared_ptr<DB::TableJoin> analyzed_join);
-    void collectAllInputs(DB::ReadBuffer & in, const DB::Block header);
+    void buildJoin(DB::Blocks & data, const DB::Block header, std::shared_ptr<DB::TableJoin> analyzed_join);
+    void collectAllInputs(DB::Blocks & data, const DB::Block header);
     void buildJoinLazily(DB::Block header, std::shared_ptr<DB::TableJoin> analyzed_join);
 };
 }

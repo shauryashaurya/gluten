@@ -16,6 +16,8 @@
  */
 package org.apache.spark.sql.execution.datasources.v1.clickhouse
 
+import org.apache.gluten.memory.CHThreadGroup
+
 import org.apache.spark.{SparkException, TaskContext, TaskOutputFileAlreadyExistException}
 import org.apache.spark.internal.Logging
 import org.apache.spark.internal.io.{FileCommitProtocol, SparkHadoopWriterUtils}
@@ -92,7 +94,8 @@ object MergeTreeFileFormatWriter extends Logging {
 
     val writerBucketSpec = bucketSpec.map {
       spec =>
-        val bucketColumns = spec.bucketColumnNames.map(c => dataColumns.find(_.name == c).get)
+        val bucketColumns =
+          spec.bucketColumnNames.map(c => dataColumns.find(_.name.equalsIgnoreCase(c)).get)
         // Spark bucketed table: use `HashPartitioning.partitionIdExpression` as bucket id
         // expression, so that we can guarantee the data distribution is same between shuffle and
         // bucketed data source, which enables us to only shuffle one side when join a bucketed
@@ -102,7 +105,7 @@ object MergeTreeFileFormatWriter extends Logging {
         MergeTreeWriterBucketSpec(bucketIdExpression, (_: Int) => "")
     }
     val sortColumns = bucketSpec.toSeq.flatMap {
-      spec => spec.sortColumnNames.map(c => dataColumns.find(_.name == c).get)
+      spec => spec.sortColumnNames.map(c => dataColumns.find(_.name.equalsIgnoreCase(c)).get)
     }
 
     val caseInsensitiveOptions = CaseInsensitiveMap(options)
@@ -263,7 +266,7 @@ object MergeTreeFileFormatWriter extends Logging {
       iterator: Iterator[InternalRow],
       concurrentOutputWriterSpec: Option[ConcurrentOutputWriterSpec]
   ): MergeTreeWriteTaskResult = {
-
+    CHThreadGroup.registerNewThreadGroup();
     val jobId = SparkHadoopWriterUtils.createJobID(new Date(jobIdInstant), sparkStageId)
     val taskId = new TaskID(jobId, TaskType.MAP, sparkPartitionId)
     val taskAttemptId = new TaskAttemptID(taskId, sparkAttemptNumber)

@@ -16,34 +16,36 @@
  */
 package org.apache.gluten.utils
 
-import org.apache.gluten.vectorized.JniLibLoader
+import org.apache.gluten.jni.JniLibLoader
 
 class SharedLibraryLoaderCentos8 extends SharedLibraryLoader {
   override def loadLib(loader: JniLibLoader): Unit = {
-    loader
-      .newTransaction()
-      .loadAndCreateLink("libboost_atomic.so.1.84.0", "libboost_atomic.so", false)
-      .loadAndCreateLink("libboost_thread.so.1.84.0", "libboost_thread.so", false)
-      .loadAndCreateLink("libboost_system.so.1.84.0", "libboost_system.so", false)
-      .loadAndCreateLink("libicudata.so.60", "libicudata.so", false)
-      .loadAndCreateLink("libicuuc.so.60", "libicuuc.so", false)
-      .loadAndCreateLink("libicui18n.so.60", "libicui18n.so", false)
-      .loadAndCreateLink("libboost_regex.so.1.84.0", "libboost_regex.so", false)
-      .loadAndCreateLink("libboost_program_options.so.1.84.0", "libboost_program_options.so", false)
-      .loadAndCreateLink("libboost_filesystem.so.1.84.0", "libboost_filesystem.so", false)
-      .loadAndCreateLink("libboost_context.so.1.84.0", "libboost_context.so", false)
-      .loadAndCreateLink("libdouble-conversion.so.3", "libdouble-conversion.so", false)
-      .loadAndCreateLink("libevent-2.1.so.6", "libevent-2.1.so", false)
-      .loadAndCreateLink("libgflags.so.2.2", "libgflags.so", false)
-      .loadAndCreateLink("libglog.so.1", "libglog.so", false)
-      .loadAndCreateLink("libdwarf.so.1", "libdwarf.so", false)
-      .loadAndCreateLink("libidn.so.11", "libidn.so", false)
-      .loadAndCreateLink("libntlm.so.0", "libntlm.so", false)
-      .loadAndCreateLink("libgsasl.so.7", "libgsasl.so", false)
-      .loadAndCreateLink("libprotobuf.so.32", "libprotobuf.so", false)
-      .loadAndCreateLink("libhdfs3.so.1", "libhdfs3.so", false)
-      .loadAndCreateLink("libre2.so.0", "libre2.so", false)
-      .loadAndCreateLink("libsodium.so.23", "libsodium.so", false)
-      .commit()
+    def loadAndCreateLink(libName: String, linkName: String): Unit = {
+      val mapLibName = System.mapLibraryName(libName)
+      loader.loadAndCreateLink(mapLibName, linkName, false)
+    }
+
+    loadAndCreateLink("libboost_atomic.so.1.84.0", "libboost_atomic.so")
+    loadAndCreateLink("libboost_thread.so.1.84.0", "libboost_thread.so")
+    loadAndCreateLink("libboost_system.so.1.84.0", "libboost_system.so")
+    loadAndCreateLink("libicudata.so.60", "libicudata.so")
+    loadAndCreateLink("libicuuc.so.60", "libicuuc.so")
+    loadAndCreateLink("libicui18n.so.60", "libicui18n.so")
+    loadAndCreateLink("libboost_regex.so.1.84.0", "libboost_regex.so")
+    loadAndCreateLink("libboost_program_options.so.1.84.0", "libboost_program_options.so")
+    loadAndCreateLink("libboost_filesystem.so.1.84.0", "libboost_filesystem.so")
+    loadAndCreateLink("libboost_context.so.1.84.0", "libboost_context.so")
+    loadAndCreateLink("libdouble-conversion.so.3", "libdouble-conversion.so")
+    loadAndCreateLink("libevent-2.1.so.6", "libevent-2.1.so")
+    loadAndCreateLink("libgflags.so.2.2", "libgflags.so")
+    loadAndCreateLink("libglog.so.1", "libglog.so")
+    loadAndCreateLink("libdwarf.so.1", "libdwarf.so")
+    loadAndCreateLink("libidn.so.11", "libidn.so")
+    loadAndCreateLink("libntlm.so.0", "libntlm.so")
+    loadAndCreateLink("libgsasl.so.7", "libgsasl.so")
+    loadAndCreateLink("libprotobuf.so.32", "libprotobuf.so")
+    loadAndCreateLink("libhdfs3.so.1", "libhdfs3.so")
+    loadAndCreateLink("libre2.so.0", "libre2.so")
+    loadAndCreateLink("libsodium.so.23", "libsodium.so")
   }
 }

@@ -38,13 +38,13 @@ endif()
 
 set(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake" ${CMAKE_MODULE_PATH})
 
-set(SUBSTRAIT_PROTO_SRC_DIR
-    ${GLUTEN_HOME}/gluten-core/src/main/resources/substrait/proto)
-message(STATUS "Set Substrait Proto Directory in ${SUBSTRAIT_PROTO_SRC_DIR}")
-
 set(GLUTEN_PROTO_SRC_DIR
     ${GLUTEN_HOME}/gluten-core/src/main/resources/org/apache/gluten/proto)
 message(STATUS "Set Gluten Proto Directory in ${GLUTEN_PROTO_SRC_DIR}")
+
+set(SUBSTRAIT_PROTO_SRC_DIR
+    ${GLUTEN_HOME}/gluten-substrait/src/main/resources/substrait/proto)
+message(STATUS "Set Substrait Proto Directory in ${SUBSTRAIT_PROTO_SRC_DIR}")
 
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
@@ -191,7 +191,6 @@ set(SPARK_COLUMNAR_PLUGIN_SRCS
     shuffle/FallbackRangePartitioner.cc
     shuffle/HashPartitioner.cc
     shuffle/LocalPartitionWriter.cc
-    shuffle/Options.cc
     shuffle/Partitioner.cc
     shuffle/Partitioning.cc
     shuffle/Payload.cc
@@ -200,6 +199,7 @@ set(SPARK_COLUMNAR_PLUGIN_SRCS
     shuffle/RoundRobinPartitioner.cc
     shuffle/ShuffleMemoryPool.cc
     shuffle/ShuffleReader.cc
+    shuffle/ShuffleWriter.cc
     shuffle/SinglePartitioner.cc
     shuffle/Spill.cc
     shuffle/Utils.cc

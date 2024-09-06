@@ -43,7 +43,7 @@ public:
 
     const ActionsDAG::Node * parse(
         const substrait::Expression_ScalarFunction & substrait_func,
-        ActionsDAGPtr & actions_dag) const override
+        ActionsDAG & actions_dag) const override
     {
         /*
             parse elt(index, e1, e2, e3, ...) as
@@ -56,7 +56,7 @@ public:
             else
                 arrayElement(array(e1, e2, e3, ...), index)
         */
-        auto parsed_args = parseFunctionArguments(substrait_func, "", actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         if (parsed_args.size() < 2)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Function {} requires at least two arguments", getName());
 
@@ -74,7 +74,7 @@ public:
         auto nullable_result_type = makeNullable(result_type);
 
         const auto * nullable_array_element_node = ActionsDAGUtil::convertNodeType(
-            actions_dag, array_element_node, nullable_result_type->getName(), array_element_node->result_name);
+            actions_dag, array_element_node, nullable_result_type, array_element_node->result_name);
 
         const auto * null_const_node = addColumnToActionsDAG(actions_dag, nullable_result_type, Field());
         const auto * is_null_node = toFunctionNode(actions_dag, "isNull", {index_arg});

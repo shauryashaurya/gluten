@@ -16,7 +16,7 @@
   <modelVersion>4.0.0</modelVersion>
   <groupId>org.apache.gluten</groupId>
   <artifactId>gluten-parent</artifactId>
-  <version>1.2.0-SNAPSHOT</version>
+  <version>1.3.0-SNAPSHOT</version>
   <packaging>pom</packaging>
 
   <name>Gluten Parent Pom</name>
@@ -24,8 +24,8 @@
   <description>Apache Gluten(incubating)</description>
 
   <organization>
-        <name>Apache</name>
-        <url>http://gluten.apache.org</url>
+    <name>Apache</name>
+    <url>http://gluten.apache.org</url>
   </organization>
 
   <scm>
@@ -43,6 +43,7 @@
 
   <modules>
     <module>gluten-core</module>
+    <module>gluten-substrait</module>
     <module>gluten-ui</module>
     <module>package</module>
     <module>shims</module>
@@ -65,14 +66,15 @@
     <delta.package.name>delta-core</delta.package.name>
     <delta.version>2.4.0</delta.version>
     <delta.binary.version>24</delta.binary.version>
-    <celeborn.version>0.4.1</celeborn.version>
-    <uniffle.version>0.8.0</uniffle.version>
+    <celeborn.version>0.5.1</celeborn.version>
+    <uniffle.version>0.9.0</uniffle.version>
     <arrow.version>15.0.0</arrow.version>
     <arrow-gluten.version>15.0.0-gluten</arrow-gluten.version>
     <arrow-memory.artifact>arrow-memory-unsafe</arrow-memory.artifact>
     <hadoop.version>2.7.4</hadoop.version>
     <slf4j.version>2.0.7</slf4j.version>
     <log4j.version>2.20.0</log4j.version>
+    <antlr4.version>4.9.3</antlr4.version>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <project.prefix>spark-sql-columnar</project.prefix>
@@ -96,7 +98,7 @@
     <guava.version>32.0.1-jre</guava.version>
     <!--spotless-->
     <spotless.version>2.27.2</spotless.version>
-    <spotless.scalafmt.version>3.5.9</spotless.scalafmt.version>
+    <spotless.scalafmt.version>3.8.3</spotless.scalafmt.version>
     <spotless.delimiter>package</spotless.delimiter>
     <spotless.license.header>
 /*
@@ -146,6 +148,7 @@
       <properties>
         <scala.version>2.13.8</scala.version>
         <scala.binary.version>2.13</scala.binary.version>
+        <spotless.scalafmt.version>3.8.3</spotless.scalafmt.version>
       </properties>
       <build>
         <pluginManagement>
@@ -169,6 +172,7 @@
                     <version>0.1.2</version>
                   </dependency>
                 </dependencies> -->
+                <recompileMode>${scala.recompile.mode}</recompileMode>
                 <args>
                   <arg>-unchecked</arg>
                   <arg>-deprecation</arg>
@@ -213,9 +217,24 @@
                   <arg>-P:wartremover:traverser:io.github.zhztheplayer.scalawarts.InheritFromCaseClass</arg>
                   -->
                 </args>
-                <compilerPlugins combine.self="override">
-                </compilerPlugins>
               </configuration>
+              <executions>
+                <execution>
+                  <id>scala-compile-first</id>
+                  <phase>process-resources</phase>
+                  <goals>
+                    <goal>add-source</goal>
+                    <goal>compile</goal>
+                  </goals>
+                </execution>
+                <execution>
+                  <id>scala-test-compile-first</id>
+                  <phase>process-test-resources</phase>
+                  <goals>
+                    <goal>testCompile</goal>
+                  </goals>
+                </execution>
+              </executions>
             </plugin>
           </plugins>
         </pluginManagement>
@@ -261,6 +280,8 @@
         <delta.package.name>delta-core</delta.package.name>
         <delta.version>2.0.1</delta.version>
         <delta.binary.version>20</delta.binary.version>
+        <antlr4.version>4.8</antlr4.version>
+        <hudi.version>0.15.0</hudi.version>
       </properties>
     </profile>
     <profile>
@@ -275,6 +296,8 @@
         <delta.package.name>delta-core</delta.package.name>
         <delta.version>2.3.0</delta.version>
         <delta.binary.version>23</delta.binary.version>
+        <antlr4.version>4.8</antlr4.version>
+	<hudi.version>0.15.0</hudi.version>
       </properties>
     </profile>
     <profile>
@@ -288,6 +311,8 @@
         <delta.package.name>delta-core</delta.package.name>
         <delta.version>2.4.0</delta.version>
         <delta.binary.version>24</delta.binary.version>
+        <antlr4.version>4.9.3</antlr4.version>
+        <hudi.version>0.15.0</hudi.version>
       </properties>
     </profile>
     <profile>
@@ -300,9 +325,11 @@
         <iceberg.version>1.5.0</iceberg.version>
         <delta.package.name>delta-spark</delta.package.name>
         <delta.version>3.2.0</delta.version>
-        <delta.binary.version>32</delta.binary.version>
+	<delta.binary.version>32</delta.binary.version>
+	<hudi.version>0.15.0</hudi.version>
         <fasterxml.version>2.15.1</fasterxml.version>
         <hadoop.version>3.3.4</hadoop.version>
+        <antlr4.version>4.9.3</antlr4.version>
       </properties>
       <dependencies>
         <dependency>
@@ -409,6 +436,15 @@
       </modules>
     </profile>
     <profile>
+      <id>hudi</id>
+      <activation>
+        <activeByDefault>false</activeByDefault>
+      </activation>
+      <modules>
+        <module>gluten-hudi</module>
+      </modules>
+    </profile>
+    <profile>
       <id>backends-velox</id>
       <activation>
         <activeByDefault>false</activeByDefault>
@@ -465,7 +501,7 @@
                   <appendAssemblyId>true</appendAssemblyId>
                   <descriptors>
                     <descriptor>
-                    src/assembly/source-assembly.xml
+                      src/assembly/source-assembly.xml
                     </descriptor>
                   </descriptors>
                   <finalName>apache-gluten-${project.version}</finalName>
@@ -473,8 +509,62 @@
               </execution>
             </executions>
           </plugin>
-	</plugins>
+        </plugins>
       </build>
+    </profile>
+
+    <!-- Profiles for different platforms -->
+    <profile>
+      <id>Darwin-x86</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>x86</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>darwin</platform>
+        <arch>x86_64</arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>Darwin-aarch64</id>
+      <activation>
+        <os>
+          <family>mac</family>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>darwin</platform>
+        <arch>aarch64</arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>Linux-amd64</id>
+      <activation>
+        <os>
+          <family>Linux</family>
+          <arch>amd64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>linux</platform>
+        <arch>amd64</arch>
+      </properties>
+    </profile>
+    <profile>
+      <id>Linux-aarch64</id>
+      <activation>
+        <os>
+          <family>Linux</family>
+          <arch>aarch64</arch>
+        </os>
+      </activation>
+      <properties>
+        <platform>linux</platform>
+        <arch>aarch64</arch>
+      </properties>
     </profile>
   </profiles>
 
@@ -716,6 +806,12 @@
       </dependency>
       <dependency>
         <groupId>com.fasterxml.jackson.datatype</groupId>
+        <artifactId>jackson-datatype-jsr310</artifactId>
+        <version>${fasterxml.version}</version>
+        <scope>provided</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson.datatype</groupId>
         <artifactId>jackson-datatype-guava</artifactId>
         <version>${fasterxml.version}</version>
         <scope>provided</scope>
@@ -756,7 +852,7 @@
               </goals>
               <configuration>
                 <classifier>${scala.binary.version}</classifier>
-		<classifier>${sparkbundle.version}</classifier>
+                <classifier>${sparkbundle.version}</classifier>
               </configuration>
             </execution>
           </executions>
@@ -816,6 +912,7 @@
               <arg>-Ywarn-unused:imports</arg>
               <arg>-deprecation</arg>
               <arg>-feature</arg>
+              <arg>-Wconf:cat=deprecation:wv,any:e</arg>
               <arg>-P:wartremover:traverser:io.github.zhztheplayer.scalawarts.InheritFromCaseClass</arg>
             </args>
           </configuration>
@@ -933,7 +1030,7 @@
           <version>${spotless.version}</version>
           <configuration>
             <java>
-              <toggleOffOn />
+              <toggleOffOn/>
               <googleJavaFormat>
                 <version>1.7</version>
               </googleJavaFormat>
@@ -943,7 +1040,7 @@
                 <order>org.apache.gluten,io.substrait.spark,,javax,java,scala,\#</order>
               </importOrder>
 
-              <removeUnusedImports />
+              <removeUnusedImports/>
               <licenseHeader>
                 <content>${spotless.license.header}</content>
                 <delimiter>${spotless.delimiter}</delimiter>
@@ -951,7 +1048,7 @@
             </java>
             <scala>
               <!--  make it works `// spotless:off `  -->
-              <toggleOffOn />
+              <toggleOffOn/>
               <scalafmt>
                 <version>${spotless.scalafmt.version}</version>
                 <scalaMajorVersion>${scala.binary.version}</scalaMajorVersion>
@@ -982,6 +1079,11 @@
           <groupId>org.xolstice.maven.plugins</groupId>
           <artifactId>protobuf-maven-plugin</artifactId>
           <version>0.5.1</version>
+        </plugin>
+        <plugin>
+          <groupId>org.antlr</groupId>
+          <artifactId>antlr4-maven-plugin</artifactId>
+          <version>${antlr4.version}</version>
         </plugin>
       </plugins>
     </pluginManagement>

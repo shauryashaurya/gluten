@@ -49,7 +49,7 @@ class VeloxRuntime final : public Runtime {
       const std::vector<std::shared_ptr<ResultIterator>>& inputs = {},
       const std::unordered_map<std::string, std::string>& sessionConf = {}) override;
 
-  std::shared_ptr<ColumnarToRowConverter> createColumnar2RowConverter() override;
+  std::shared_ptr<ColumnarToRowConverter> createColumnar2RowConverter(int64_t column2RowMemThreshold) override;
 
   std::shared_ptr<ColumnarBatch> createOrGetEmptySchemaBatch(int32_t numRows) override;
 
@@ -101,7 +101,7 @@ class VeloxRuntime final : public Runtime {
  private:
   VeloxMemoryManager* vmm_;
   std::shared_ptr<const facebook::velox::core::PlanNode> veloxPlan_;
-  std::shared_ptr<facebook::velox::Config> veloxCfg_;
+  std::shared_ptr<facebook::velox::config::ConfigBase> veloxCfg_;
   bool debugModeEnabled_{false};
 
   std::unordered_map<int32_t, std::shared_ptr<ColumnarBatch>> emptySchemaBatchLoopUp_;

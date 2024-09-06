@@ -16,8 +16,8 @@
  */
 package org.apache.gluten.vectorized;
 
-import org.apache.gluten.exec.Runtime;
-import org.apache.gluten.exec.RuntimeAware;
+import org.apache.gluten.runtime.Runtime;
+import org.apache.gluten.runtime.RuntimeAware;
 
 import java.io.IOException;
 
@@ -59,8 +59,11 @@ public class ShuffleWriterJniWrapper implements RuntimeAware {
       String codec,
       String codecBackend,
       int compressionLevel,
+      int compressionBufferSize,
       int bufferCompressThreshold,
       String compressionMode,
+      int sortBufferInitialSize,
+      boolean useRadixSort,
       String dataFile,
       int subDirsPerLocalDir,
       String localDirs,
@@ -78,8 +81,11 @@ public class ShuffleWriterJniWrapper implements RuntimeAware {
         codec,
         codecBackend,
         compressionLevel,
+        compressionBufferSize,
         bufferCompressThreshold,
         compressionMode,
+        sortBufferInitialSize,
+        useRadixSort,
         dataFile,
         subDirsPerLocalDir,
         localDirs,
@@ -107,8 +113,11 @@ public class ShuffleWriterJniWrapper implements RuntimeAware {
       int bufferSize,
       String codec,
       int compressionLevel,
+      int compressionBufferSize,
       int bufferCompressThreshold,
       String compressionMode,
+      int sortBufferInitialSize,
+      boolean useRadixSort,
       int pushBufferMaxSize,
       long sortBufferMaxSize,
       Object pusher,
@@ -127,8 +136,11 @@ public class ShuffleWriterJniWrapper implements RuntimeAware {
         codec,
         null,
         compressionLevel,
+        compressionBufferSize,
         bufferCompressThreshold,
         compressionMode,
+        sortBufferInitialSize,
+        useRadixSort,
         null,
         0,
         null,
@@ -152,8 +164,11 @@ public class ShuffleWriterJniWrapper implements RuntimeAware {
       String codec,
       String codecBackend,
       int compressionLevel,
+      int compressionBufferSize,
       int bufferCompressThreshold,
       String compressionMode,
+      int sortBufferInitialSize,
+      boolean useRadixSort,
       String dataFile,
       int subDirsPerLocalDir,
       String localDirs,

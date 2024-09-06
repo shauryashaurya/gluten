@@ -16,8 +16,12 @@
  */
 package org.apache.spark.sql.delta.catalog
 
+import org.apache.gluten.expression.ConverterUtils
+import org.apache.gluten.expression.ConverterUtils.normalizeColName
+
 import org.apache.spark.sql.catalyst.catalog.{BucketSpec, CatalogTable}
 import org.apache.spark.sql.delta.Snapshot
+import org.apache.spark.sql.execution.datasources.utils.MergeTreeDeltaUtil
 
 import org.apache.hadoop.fs.Path
 
@@ -46,10 +50,9 @@ trait ClickHouseTableV2Base {
     if (tableProperties.containsKey("numBuckets")) {
       val numBuckets = tableProperties.get("numBuckets").trim.toInt
       val bucketColumnNames: Seq[String] =
-        tableProperties.get("bucketColumnNames").split(",").map(_.trim).toSeq
-      val sortColumnNames: Seq[String] = if (tableProperties.containsKey("orderByKey")) {
-        tableProperties.get("orderByKey").split(",").map(_.trim).toSeq
-      } else Seq.empty[String]
+        getCommaSeparatedColumns("bucketColumnNames").getOrElse(Seq.empty[String])
+      val sortColumnNames: Seq[String] =
+        getCommaSeparatedColumns("orderByKey").getOrElse(Seq.empty[String])
       Some(BucketSpec(numBuckets, bucketColumnNames, sortColumnNames))
     } else {
       None
@@ -76,7 +79,11 @@ trait ClickHouseTableV2Base {
     val tableProperties = deltaProperties
     if (tableProperties.containsKey(keyName)) {
       if (tableProperties.get(keyName).nonEmpty) {
-        val keys = tableProperties.get(keyName).split(",").map(_.trim).toSeq
+        val keys = tableProperties
+          .get(keyName)
+          .split(",")
+          .map(n => ConverterUtils.normalizeColName(n.trim))
+          .toSeq
         keys.foreach(
           s => {
             if (s.contains(".")) {
@@ -84,7 +91,7 @@ trait ClickHouseTableV2Base {
                 s"$keyName $s can not contain '.' (not support nested column yet)")
             }
           })
-        Some(keys.map(s => s.toLowerCase()))
+        Some(keys)
       } else {
         None
       }
@@ -95,27 +102,22 @@ trait ClickHouseTableV2Base {
 
   lazy val orderByKeyOption: Option[Seq[String]] = {
     if (bucketOption.isDefined && bucketOption.get.sortColumnNames.nonEmpty) {
-      val orderByKes = bucketOption.get.sortColumnNames
-      val invalidKeys = orderByKes.intersect(partitionColumns)
+      val orderByKeys = bucketOption.get.sortColumnNames.map(normalizeColName).toSeq
+      val invalidKeys = orderByKeys.intersect(partitionColumns)
       if (invalidKeys.nonEmpty) {
         throw new IllegalStateException(
           s"partition cols $invalidKeys can not be in the order by keys.")
       }
-      Some(orderByKes)
+      Some(orderByKeys)
     } else {
-      val tableProperties = deltaProperties
-      if (tableProperties.containsKey("orderByKey")) {
-        if (tableProperties.get("orderByKey").nonEmpty) {
-          val orderByKes = tableProperties.get("orderByKey").split(",").map(_.trim).toSeq
-          val invalidKeys = orderByKes.intersect(partitionColumns)
-          if (invalidKeys.nonEmpty) {
-            throw new IllegalStateException(
-              s"partition cols $invalidKeys can not be in the order by keys.")
-          }
-          Some(orderByKes)
-        } else {
-          None
+      val orderByKeys = getCommaSeparatedColumns("orderByKey")
+      if (orderByKeys.isDefined) {
+        val invalidKeys = orderByKeys.get.intersect(partitionColumns)
+        if (invalidKeys.nonEmpty) {
+          throw new IllegalStateException(
+            s"partition cols $invalidKeys can not be in the order by keys.")
         }
+        orderByKeys
       } else {
         None
       }
@@ -124,27 +126,22 @@ trait ClickHouseTableV2Base {
 
   lazy val primaryKeyOption: Option[Seq[String]] = {
     if (orderByKeyOption.isDefined) {
-      val tableProperties = deltaProperties
-      if (tableProperties.containsKey("primaryKey")) {
-        if (tableProperties.get("primaryKey").nonEmpty) {
-          val primaryKeys = tableProperties.get("primaryKey").split(",").map(_.trim).toSeq
-          if (!orderByKeyOption.get.mkString(",").startsWith(primaryKeys.mkString(","))) {
-            throw new IllegalStateException(
-              s"Primary key $primaryKeys must be a prefix of the sorting key")
-          }
-          Some(primaryKeys)
-        } else {
-          None
-        }
-      } else {
-        None
+      val primaryKeys = getCommaSeparatedColumns("primaryKey")
+      if (
+        primaryKeys.isDefined && !orderByKeyOption.get
+          .mkString(",")
+          .startsWith(primaryKeys.get.mkString(","))
+      ) {
+        throw new IllegalStateException(
+          s"Primary key $primaryKeys must be a prefix of the sorting key")
       }
+      primaryKeys
     } else {
       None
     }
   }
 
-  lazy val partitionColumns = deltaSnapshot.metadata.partitionColumns
+  lazy val partitionColumns = deltaSnapshot.metadata.partitionColumns.map(normalizeColName).toSeq
 
   lazy val clickhouseTableConfigs: Map[String, String] = {
     val tableProperties = deltaProperties()
@@ -153,33 +150,15 @@ trait ClickHouseTableV2Base {
     configs.toMap
   }
 
-  def primaryKey(): String = primaryKeyOption match {
-    case Some(keys) => keys.mkString(",")
-    case None => ""
-  }
+  def primaryKey(): String = MergeTreeDeltaUtil.columnsToStr(primaryKeyOption)
 
   def orderByKey(): String = orderByKeyOption match {
-    case Some(keys) => keys.mkString(",")
+    case Some(keys) => keys.map(normalizeColName).mkString(",")
     case None => "tuple()"
   }
 
-  def lowCardKey(): String = lowCardKeyOption match {
-    case Some(keys) => keys.mkString(",")
-    case None => ""
-  }
-
-  def minmaxIndexKey(): String = minmaxIndexKeyOption match {
-    case Some(keys) => keys.mkString(",")
-    case None => ""
-  }
-
-  def bfIndexKey(): String = bfIndexKeyOption match {
-    case Some(keys) => keys.mkString(",")
-    case None => ""
-  }
-
-  def setIndexKey(): String = setIndexKeyOption match {
-    case Some(keys) => keys.mkString(",")
-    case None => ""
-  }
+  def lowCardKey(): String = MergeTreeDeltaUtil.columnsToStr(lowCardKeyOption)
+  def minmaxIndexKey(): String = MergeTreeDeltaUtil.columnsToStr(minmaxIndexKeyOption)
+  def bfIndexKey(): String = MergeTreeDeltaUtil.columnsToStr(bfIndexKeyOption)
+  def setIndexKey(): String = MergeTreeDeltaUtil.columnsToStr(setIndexKeyOption)
 }

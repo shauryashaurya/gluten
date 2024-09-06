@@ -32,6 +32,7 @@ import org.apache.celeborn.client.read.CelebornInputStream
 import java.io._
 import java.nio.ByteBuffer
 import java.util.Locale
+import java.util.concurrent.atomic.AtomicBoolean
 
 import scala.reflect.ClassTag
 
@@ -57,8 +58,14 @@ private class CHCelebornColumnarBatchSerializerInstance(
   extends SerializerInstance
   with Logging {
 
-  private lazy val compressionCodec =
-    GlutenShuffleUtils.getCompressionCodec(SparkEnv.get.conf).toUpperCase(Locale.ROOT)
+  private lazy val conf = SparkEnv.get.conf
+  private lazy val compressionCodec = GlutenShuffleUtils.getCompressionCodec(conf)
+  private lazy val capitalizedCompressionCodec = compressionCodec.toUpperCase(Locale.ROOT)
+  private lazy val compressionLevel =
+    GlutenShuffleUtils.getCompressionLevel(
+      conf,
+      compressionCodec,
+      GlutenConfig.getConf.columnarShuffleCodecBackend.orNull)
 
   override def deserializeStream(in: InputStream): DeserializationStream = {
     new DeserializationStream {
@@ -74,7 +81,8 @@ private class CHCelebornColumnarBatchSerializerInstance(
       private var numBatchesTotal: Long = _
       private var numRowsTotal: Long = _
 
-      private var isClosed: Boolean = false
+      // Otherwise calling close() twice would cause replication of metrics.
+      private val closeCalled: AtomicBoolean = new AtomicBoolean(false)
 
       override def asIterator: Iterator[Any] = {
         // This method is never called by shuffle code.
@@ -153,18 +161,18 @@ private class CHCelebornColumnarBatchSerializerInstance(
       }
 
       override def close(): Unit = {
-        if (!isClosed) {
-          if (numBatchesTotal > 0) {
-            readBatchNumRows.set(numRowsTotal.toDouble / numBatchesTotal)
-          }
-          numOutputRows += numRowsTotal
-          if (cb != null) {
-            cb.close()
-            cb = null
-          }
-          closeReader()
-          isClosed = true
+        if (!closeCalled.compareAndSet(false, true)) {
+          return
         }
+        if (numBatchesTotal > 0) {
+          readBatchNumRows.set(numRowsTotal.toDouble / numBatchesTotal)
+        }
+        numOutputRows += numRowsTotal
+        if (cb != null) {
+          cb.close()
+          cb = null
+        }
+        closeReader()
       }
 
       def getReader: CHStreamReader = {
@@ -197,7 +205,8 @@ private class CHCelebornColumnarBatchSerializerInstance(
         writeBuffer,
         dataSize,
         CHBackendSettings.useCustomizedShuffleCodec,
-        compressionCodec,
+        capitalizedCompressionCodec,
+        compressionLevel,
         CHBackendSettings.customizeBufferSize
       )
 

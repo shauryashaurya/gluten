@@ -31,8 +31,9 @@
 #include "memory/VeloxMemoryManager.h"
 #include "substrait/SubstraitToVeloxPlanValidator.h"
 #include "utils/ObjectStore.h"
-#include "utils/VeloxBatchAppender.h"
+#include "utils/VeloxBatchResizer.h"
 #include "velox/common/base/BloomFilter.h"
+#include "velox/common/file/FileSystems.h"
 
 #include <iostream>
 
@@ -87,11 +88,11 @@ JNIEXPORT void JNICALL Java_org_apache_gluten_init_NativeBackendInitializer_shut
   JNI_METHOD_END()
 }
 
-JNIEXPORT void JNICALL Java_org_apache_gluten_udf_UdfJniWrapper_getFunctionSignatures( // NOLINT
+JNIEXPORT void JNICALL Java_org_apache_gluten_udf_UdfJniWrapper_registerFunctionSignatures( // NOLINT
     JNIEnv* env,
     jclass) {
   JNI_METHOD_START
-  gluten::jniGetFunctionSignatures(env);
+  gluten::jniRegisterFunctionSignatures(env);
   JNI_METHOD_END()
 }
 
@@ -244,19 +245,38 @@ JNIEXPORT jbyteArray JNICALL Java_org_apache_gluten_utils_VeloxBloomFilterJniWra
   JNI_METHOD_END(nullptr)
 }
 
-JNIEXPORT jlong JNICALL Java_org_apache_gluten_utils_VeloxBatchAppenderJniWrapper_create( // NOLINT
+JNIEXPORT jlong JNICALL Java_org_apache_gluten_utils_VeloxBatchResizerJniWrapper_create( // NOLINT
     JNIEnv* env,
     jobject wrapper,
     jint minOutputBatchSize,
+    jint maxOutputBatchSize,
     jobject jIter) {
   JNI_METHOD_START
   auto ctx = gluten::getRuntime(env, wrapper);
   auto pool = dynamic_cast<gluten::VeloxMemoryManager*>(ctx->memoryManager())->getLeafMemoryPool();
   auto iter = gluten::makeJniColumnarBatchIterator(env, jIter, ctx, nullptr);
   auto appender = std::make_shared<gluten::ResultIterator>(
-      std::make_unique<gluten::VeloxBatchAppender>(pool.get(), minOutputBatchSize, std::move(iter)));
+      std::make_unique<gluten::VeloxBatchResizer>(pool.get(), minOutputBatchSize, maxOutputBatchSize, std::move(iter)));
   return ctx->saveObject(appender);
   JNI_METHOD_END(gluten::kInvalidObjectHandle)
+}
+
+JNIEXPORT jboolean JNICALL
+Java_org_apache_gluten_utils_VeloxFileSystemValidationJniWrapper_allSupportedByRegisteredFileSystems( // NOLINT
+    JNIEnv* env,
+    jclass,
+    jobjectArray stringArray) {
+  JNI_METHOD_START
+  int size = env->GetArrayLength(stringArray);
+  for (int i = 0; i < size; i++) {
+    jstring string = (jstring)(env->GetObjectArrayElement(stringArray, i));
+    std::string path = jStringToCString(env, string);
+    if (!velox::filesystems::isPathSupportedByRegisteredFileSystems(path)) {
+      return false;
+    }
+  }
+  return true;
+  JNI_METHOD_END(false)
 }
 
 #ifdef __cplusplus

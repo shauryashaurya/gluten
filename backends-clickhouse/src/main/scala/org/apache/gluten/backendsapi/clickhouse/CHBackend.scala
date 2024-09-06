@@ -18,6 +18,7 @@ package org.apache.gluten.backendsapi.clickhouse
 
 import org.apache.gluten.{CH_BRANCH, CH_COMMIT, GlutenConfig}
 import org.apache.gluten.backendsapi._
+import org.apache.gluten.execution.WriteFilesExecTransformer
 import org.apache.gluten.expression.WindowFunctionsBuilder
 import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
@@ -28,12 +29,15 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate.AggregateExpression
+import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning}
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources.FileFormat
+import org.apache.spark.sql.execution.datasources.orc.OrcFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
 import org.apache.spark.sql.internal.SQLConf
-import org.apache.spark.sql.types.{ArrayType, MapType, StructField, StructType}
+import org.apache.spark.sql.types.{ArrayType, MapType, Metadata, StructField, StructType}
 
 import java.util.Locale
 
@@ -49,6 +53,7 @@ class CHBackend extends Backend {
   override def validatorApi(): ValidatorApi = new CHValidatorApi
   override def metricsApi(): MetricsApi = new CHMetricsApi
   override def listenerApi(): ListenerApi = new CHListenerApi
+  override def ruleApi(): RuleApi = new CHRuleApi
   override def settings(): BackendSettingsApi = CHBackendSettings
 }
 
@@ -137,10 +142,11 @@ object CHBackendSettings extends BackendSettingsApi with Logging {
       .toLowerCase(Locale.getDefault)
   }
 
-  override def supportFileFormatRead(
+  override def validateScan(
       format: ReadFileFormat,
       fields: Array[StructField],
       partTable: Boolean,
+      rootPaths: Seq[String],
       paths: Seq[String]): ValidationResult = {
 
     def validateFilePath: Boolean = {
@@ -172,20 +178,87 @@ object CHBackendSettings extends BackendSettingsApi with Logging {
     format match {
       case ParquetReadFormat =>
         if (validateFilePath) {
-          ValidationResult.ok
+          ValidationResult.succeeded
         } else {
-          ValidationResult.notOk("Validate file path failed.")
+          ValidationResult.failed("Validate file path failed.")
         }
-      case OrcReadFormat => ValidationResult.ok
-      case MergeTreeReadFormat => ValidationResult.ok
+      case OrcReadFormat => ValidationResult.succeeded
+      case MergeTreeReadFormat => ValidationResult.succeeded
       case TextReadFormat =>
         if (!hasComplexType) {
-          ValidationResult.ok
+          ValidationResult.succeeded
         } else {
-          ValidationResult.notOk("Has complex type.")
+          ValidationResult.failed("Has complex type.")
         }
-      case JsonReadFormat => ValidationResult.ok
-      case _ => ValidationResult.notOk(s"Unsupported file format $format")
+      case JsonReadFormat => ValidationResult.succeeded
+      case _ => ValidationResult.failed(s"Unsupported file format $format")
+    }
+  }
+
+  override def supportWriteFilesExec(
+      format: FileFormat,
+      fields: Array[StructField],
+      bucketSpec: Option[BucketSpec],
+      options: Map[String, String]): ValidationResult = {
+
+    def validateCompressionCodec(): Option[String] = {
+      // FIXME: verify Support compression codec
+      val compressionCodec = WriteFilesExecTransformer.getCompressionCodec(options)
+      None
+    }
+
+    def validateFileFormat(): Option[String] = {
+      format match {
+        case _: ParquetFileFormat => None
+        case _: OrcFileFormat => None
+        case f: FileFormat => Some(s"Not support FileFormat: ${f.getClass.getSimpleName}")
+      }
+    }
+
+    // Validate if all types are supported.
+    def validateDateTypes(): Option[String] = {
+      None
+    }
+
+    def validateFieldMetadata(): Option[String] = {
+      // copy CharVarcharUtils.CHAR_VARCHAR_TYPE_STRING_METADATA_KEY
+      val CHAR_VARCHAR_TYPE_STRING_METADATA_KEY = "__CHAR_VARCHAR_TYPE_STRING"
+      fields
+        .find(_.metadata != Metadata.empty)
+        .filterNot(_.metadata.contains(CHAR_VARCHAR_TYPE_STRING_METADATA_KEY))
+        .map {
+          filed =>
+            s"StructField contain the metadata information: $filed, metadata: ${filed.metadata}"
+        }
+    }
+    def validateWriteFilesOptions(): Option[String] = {
+      val maxRecordsPerFile = options
+        .get("maxRecordsPerFile")
+        .map(_.toLong)
+        .getOrElse(SQLConf.get.maxRecordsPerFile)
+      if (maxRecordsPerFile > 0) {
+        Some("Unsupported native write: maxRecordsPerFile not supported.")
+      } else {
+        None
+      }
+    }
+
+    def validateBucketSpec(): Option[String] = {
+      if (bucketSpec.nonEmpty) {
+        Some("Unsupported native write: bucket write is not supported.")
+      } else {
+        None
+      }
+    }
+
+    validateCompressionCodec()
+      .orElse(validateFileFormat())
+      .orElse(validateFieldMetadata())
+      .orElse(validateDateTypes())
+      .orElse(validateWriteFilesOptions())
+      .orElse(validateBucketSpec()) match {
+      case Some(reason) => ValidationResult.failed(reason)
+      case _ => ValidationResult.succeeded
     }
   }
 
@@ -237,7 +310,8 @@ object CHBackendSettings extends BackendSettingsApi with Logging {
           }
 
           wExpression.windowFunction match {
-            case _: RowNumber | _: AggregateExpression | _: Rank | _: DenseRank | _: NTile =>
+            case _: RowNumber | _: AggregateExpression | _: Rank | _: DenseRank | _: PercentRank |
+                _: NTile =>
               allSupported = allSupported
             case l: Lag =>
               checkLagOrLead(l.third)
@@ -285,16 +359,50 @@ object CHBackendSettings extends BackendSettingsApi with Logging {
       .getLong(GLUTEN_MAX_SHUFFLE_READ_BYTES, GLUTEN_MAX_SHUFFLE_READ_BYTES_DEFAULT)
   }
 
-  override def supportWriteFilesExec(
-      format: FileFormat,
-      fields: Array[StructField],
-      bucketSpec: Option[BucketSpec],
-      options: Map[String, String]): ValidationResult =
-    ValidationResult.notOk("CH backend is unsupported.")
+  // Reorder hash join tables, make sure to use the smaller table to build the hash table.
+  // Need to enable AQE
+  def enableReorderHashJoinTables(): Boolean = {
+    SparkEnv.get.conf.getBoolean(
+      "spark.gluten.sql.columnar.backend.ch.enable_reorder_hash_join_tables",
+      true
+    )
+  }
+  // The threshold to reorder hash join tables, if The result of dividing two tables' size is
+  // large then this threshold, reorder the tables. e.g. a/b > threshold or b/a > threshold
+  def reorderHashJoinTablesThreshold(): Int = {
+    SparkEnv.get.conf.getInt(
+      "spark.gluten.sql.columnar.backend.ch.reorder_hash_join_tables_thresdhold",
+      10
+    )
+  }
 
   override def enableNativeWriteFiles(): Boolean = {
     GlutenConfig.getConf.enableNativeWriter.getOrElse(false)
   }
 
-  override def mergeTwoPhasesHashBaseAggregateIfNeed(): Boolean = true
+  override def supportCartesianProductExec(): Boolean = true
+
+  override def supportHashBuildJoinTypeOnLeft: JoinType => Boolean = {
+    t =>
+      if (super.supportHashBuildJoinTypeOnLeft(t)) {
+        true
+      } else {
+        t match {
+          case LeftOuter => true
+          case _ => false
+        }
+      }
+  }
+
+  override def supportHashBuildJoinTypeOnRight: JoinType => Boolean = {
+    t =>
+      if (super.supportHashBuildJoinTypeOnRight(t)) {
+        true
+      } else {
+        t match {
+          case RightOuter => true
+          case _ => false
+        }
+      }
+  }
 }

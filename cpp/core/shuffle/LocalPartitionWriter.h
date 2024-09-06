@@ -35,14 +35,20 @@ class LocalPartitionWriter : public PartitionWriter {
       const std::string& dataFile,
       const std::vector<std::string>& localDirs);
 
-  arrow::Status evict(
+  arrow::Status hashEvict(
       uint32_t partitionId,
       std::unique_ptr<InMemoryPayload> inMemoryPayload,
       Evict::type evictType,
       bool reuseBuffers,
       bool hasComplexType) override;
 
-  arrow::Status evict(uint32_t partitionId, int64_t rawSize, const char* data, int64_t length) override;
+  arrow::Status sortEvict(
+      uint32_t partitionId,
+      std::unique_ptr<InMemoryPayload> inMemoryPayload,
+      std::shared_ptr<arrow::Buffer> compressed,
+      bool isFinal) override;
+
+  arrow::Status evict(uint32_t partitionId, std::unique_ptr<BlockPayload> blockPayload, bool stop) override;
 
   /// The stop function performs several tasks:
   /// 1. Opens the final data file.
@@ -80,13 +86,13 @@ class LocalPartitionWriter : public PartitionWriter {
  private:
   void init();
 
-  arrow::Status requestSpill();
+  arrow::Status requestSpill(bool isFinal);
 
-  arrow::Status finishSpill();
+  arrow::Status finishSpill(bool close);
 
   std::string nextSpilledFileDir();
 
-  arrow::Status openDataFile();
+  arrow::Result<std::shared_ptr<arrow::io::OutputStream>> openFile(const std::string& file);
 
   arrow::Status mergeSpills(uint32_t partitionId);
 
@@ -98,6 +104,7 @@ class LocalPartitionWriter : public PartitionWriter {
   std::vector<std::string> localDirs_;
 
   bool stopped_{false};
+  bool useSpillFileAsDataFile_{false};
   std::shared_ptr<LocalSpiller> spiller_{nullptr};
   std::shared_ptr<PayloadMerger> merger_{nullptr};
   std::shared_ptr<PayloadCache> payloadCache_{nullptr};
@@ -108,11 +115,11 @@ class LocalPartitionWriter : public PartitionWriter {
   std::vector<int32_t> subDirSelection_;
   std::shared_ptr<arrow::io::OutputStream> dataFileOs_;
 
+  int64_t totalBytesToEvict_{0};
   int64_t totalBytesEvicted_{0};
-  int64_t totalBytesWritten_{0};
   std::vector<int64_t> partitionLengths_;
   std::vector<int64_t> rawPartitionLengths_;
 
-  uint32_t lastEvictPid_{0};
+  int32_t lastEvictPid_{-1};
 };
 } // namespace gluten

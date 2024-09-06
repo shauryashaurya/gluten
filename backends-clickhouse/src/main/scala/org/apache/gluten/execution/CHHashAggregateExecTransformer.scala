@@ -20,6 +20,7 @@ import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.execution.CHHashAggregateExecTransformer.getAggregateResultAttributes
 import org.apache.gluten.expression._
+import org.apache.gluten.extension.ExpressionExtensionTrait
 import org.apache.gluten.substrait.`type`.{TypeBuilder, TypeNode}
 import org.apache.gluten.substrait.{AggregationParams, SubstraitContext}
 import org.apache.gluten.substrait.expression.{AggregateFunctionNode, ExpressionBuilder, ExpressionNode}
@@ -249,7 +250,7 @@ case class CHHashAggregateExecTransformer(
           childrenNodeList.add(node)
         }
         val aggFunctionNode = ExpressionBuilder.makeAggregateFunction(
-          AggregateFunctionsBuilder.create(args, aggregateFunc),
+          CHExpressions.createAggregateFunction(args, aggregateFunc),
           childrenNodeList,
           modeToKeyWord(aggExpr.mode),
           ConverterUtils.getTypeNode(aggregateFunc.dataType, aggregateFunc.nullable)
@@ -286,10 +287,10 @@ case class CHHashAggregateExecTransformer(
       val aggregateFunc = aggExpr.aggregateFunction
       var aggFunctionName =
         if (
-          ExpressionMappings.expressionExtensionTransformer.extensionExpressionsMapping.contains(
-            aggregateFunc.getClass)
+          ExpressionExtensionTrait.expressionExtensionTransformer.extensionExpressionsMapping
+            .contains(aggregateFunc.getClass)
         ) {
-          ExpressionMappings.expressionExtensionTransformer
+          ExpressionExtensionTrait.expressionExtensionTransformer
             .buildCustomAggregateFunction(aggregateFunc)
             ._1
             .get
@@ -370,8 +371,9 @@ case class CHHashAggregateExecTransformer(
               // Use approxPercentile.nullable as the nullable of the struct type
               // to make sure it returns null when input is empty
               fields = fields :+ (approxPercentile.child.dataType, approxPercentile.nullable)
-              fields = fields :+ (approxPercentile.percentageExpression.dataType,
-              approxPercentile.percentageExpression.nullable)
+              fields = fields :+ (
+                approxPercentile.percentageExpression.dataType,
+                approxPercentile.percentageExpression.nullable)
               (makeStructType(fields), attr.nullable)
             case _ =>
               (makeStructTypeSingleOne(attr.dataType, attr.nullable), attr.nullable)
@@ -436,10 +438,10 @@ case class CHHashAggregateExecPullOutHelper(
     val aggregateFunc = exp.aggregateFunction
     // First handle the custom aggregate functions
     if (
-      ExpressionMappings.expressionExtensionTransformer.extensionExpressionsMapping.contains(
+      ExpressionExtensionTrait.expressionExtensionTransformer.extensionExpressionsMapping.contains(
         aggregateFunc.getClass)
     ) {
-      ExpressionMappings.expressionExtensionTransformer
+      ExpressionExtensionTrait.expressionExtensionTransformer
         .getAttrsIndexForExtensionAggregateExpr(
           aggregateFunc,
           exp.mode,

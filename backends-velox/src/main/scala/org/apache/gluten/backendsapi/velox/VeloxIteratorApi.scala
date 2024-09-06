@@ -19,13 +19,13 @@ package org.apache.gluten.backendsapi.velox
 import org.apache.gluten.GlutenNumaBindingInfo
 import org.apache.gluten.backendsapi.IteratorApi
 import org.apache.gluten.execution._
+import org.apache.gluten.iterator.Iterators
 import org.apache.gluten.metrics.IMetrics
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.plan.PlanNode
 import org.apache.gluten.substrait.rel.{LocalFilesBuilder, LocalFilesNode, SplitInfo}
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
 import org.apache.gluten.utils._
-import org.apache.gluten.utils.iterator.Iterators
 import org.apache.gluten.vectorized._
 
 import org.apache.spark.{SparkConf, TaskContext}
@@ -37,7 +37,7 @@ import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.execution.datasources.{FilePartition, PartitionedFile}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
-import org.apache.spark.sql.utils.OASPackageBridge.InputMetricsWrapper
+import org.apache.spark.sql.utils.SparkInputMetricsUtil.InputMetricsWrapper
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.util.ExecutorManager
 
@@ -54,7 +54,8 @@ class VeloxIteratorApi extends IteratorApi with Logging {
       partition: InputPartition,
       partitionSchema: StructType,
       fileFormat: ReadFileFormat,
-      metadataColumnNames: Seq[String]): SplitInfo = {
+      metadataColumnNames: Seq[String],
+      properties: Map[String, String]): SplitInfo = {
     partition match {
       case f: FilePartition =>
         val (
@@ -78,7 +79,9 @@ class VeloxIteratorApi extends IteratorApi with Logging {
           partitionColumns,
           metadataColumns,
           fileFormat,
-          preferredLocations.toList.asJava)
+          preferredLocations.toList.asJava,
+          mapAsJavaMap(properties)
+        )
       case _ =>
         throw new UnsupportedOperationException(s"Unsupported input partition.")
     }
@@ -161,7 +164,7 @@ class VeloxIteratorApi extends IteratorApi with Logging {
     (paths, starts, lengths, fileSizes, modificationTimes, partitionColumns, metadataColumns)
   }
 
-  override def injectWriteFilesTempPath(path: String): Unit = {
+  override def injectWriteFilesTempPath(path: String, fileName: String): Unit = {
     val transKernel = NativePlanEvaluator.create()
     transKernel.injectWriteFilesTempPath(path)
   }
@@ -171,7 +174,7 @@ class VeloxIteratorApi extends IteratorApi with Logging {
       inputPartition: BaseGlutenPartition,
       context: TaskContext,
       pipelineTime: SQLMetric,
-      updateInputMetrics: (InputMetricsWrapper) => Unit,
+      updateInputMetrics: InputMetricsWrapper => Unit,
       updateNativeMetrics: IMetrics => Unit,
       partitionIndex: Int,
       inputIterators: Seq[Iterator[ColumnarBatch]] = Seq()): Iterator[ColumnarBatch] = {

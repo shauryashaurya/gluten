@@ -54,7 +54,7 @@ public:
     bool scheduleDataProcessingJob(BackgroundJobsAssignee & executor) override;
     std::map<std::string, MutationCommands> getUnfinishedMutationCommands() const override;
     std::vector<MergeTreeDataPartPtr> loadDataPartsWithNames(std::unordered_set<std::string> parts);
-    void removePartFromMemory(const MergeTreeData::DataPartPtr & part_to_detach);
+    void removePartFromMemory(const MergeTreeData::DataPart & part_to_detach);
 
     MergeTreeDataWriter writer;
     MergeTreeDataSelectExecutor reader;
@@ -65,6 +65,7 @@ public:
 private:
     SimpleIncrement increment;
 
+    void prefectchMetaDataFile(std::unordered_set<std::string> parts);
     void startBackgroundMovesIfNeeded() override;
     std::unique_ptr<MergeTreeSettings> getDefaultSettings() const override;
     LoadPartResult loadDataPart(

@@ -18,6 +18,8 @@
 
 #include <memory>
 #include <unordered_set>
+#include <Core/Joins.h>
+#include <Interpreters/TableJoin.h>
 #include <Parser/RelParser.h>
 #include <substrait/algebra.pb.h>
 
@@ -30,8 +32,6 @@ namespace local_engine
 {
 
 class StorageJoinFromReadBuffer;
-
-std::pair<DB::JoinKind, DB::JoinStrictness> getJoinKindAndStrictness(substrait::JoinRel_JoinType join_type);
 
 class JoinRelParser : public RelParser
 {
@@ -67,8 +67,28 @@ private:
 
     void addPostFilter(DB::QueryPlan & plan, const substrait::JoinRel & join);
 
+    void existenceJoinPostProject(DB::QueryPlan & plan, const DB::Names & left_input_cols);
+
     static std::unordered_set<DB::JoinTableSide> extractTableSidesFromExpression(
         const substrait::Expression & expr, const DB::Block & left_header, const DB::Block & right_header);
+
+    bool couldRewriteToMultiJoinOnClauses(
+        const DB::TableJoin::JoinOnClause & prefix_clause,
+        std::vector<DB::TableJoin::JoinOnClause> & clauses,
+        const substrait::JoinRel & join_rel,
+        const DB::Block & left_header,
+        const DB::Block & right_header);
+
+    DB::QueryPlanPtr buildMultiOnClauseHashJoin(
+        std::shared_ptr<DB::TableJoin> table_join,
+        DB::QueryPlanPtr left_plan,
+        DB::QueryPlanPtr right_plan,
+        const std::vector<DB::TableJoin::JoinOnClause> & join_on_clauses);
+    DB::QueryPlanPtr buildSingleOnClauseHashJoin(
+        const substrait::JoinRel & join_rel,
+        std::shared_ptr<DB::TableJoin> table_join,
+        DB::QueryPlanPtr left_plan,
+        DB::QueryPlanPtr right_plan);
 };
 
 }

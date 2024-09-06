@@ -19,6 +19,7 @@
 #include <DataTypes/DataTypesNumber.h>
 #include <DataTypes/IDataType.h>
 #include <Parser/FunctionParser.h>
+#include <Common/BlockTypeUtils.h>
 #include <Common/CHUtil.h>
 
 namespace DB
@@ -45,7 +46,7 @@ public:
 
     const ActionsDAG::Node * parse(
         const substrait::Expression_ScalarFunction & substrait_func,
-        ActionsDAGPtr & actions_dag) const override
+        ActionsDAG & actions_dag) const override
     {
         /*
             parse find_in_set(str, str_array) as
@@ -55,7 +56,7 @@ public:
                 null
             else indexOf(assumeNotNull(splitByChar(',', str_array)), str)
         */
-        auto parsed_args = parseFunctionArguments(substrait_func, "", actions_dag);
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         if (parsed_args.size() != 2)
             throw Exception(ErrorCodes::NUMBER_OF_ARGUMENTS_DOESNT_MATCH, "Function {} requires exactly two arguments", getName());
 
@@ -73,9 +74,9 @@ public:
         if (!str_is_nullable && !str_array_is_nullable)
             return convertNodeTypeIfNeeded(substrait_func, index_of_node, actions_dag);
 
-        auto nullable_result_type = makeNullable(std::make_shared<DataTypeInt32>());
+        auto nullable_result_type = makeNullable(INT());
         const auto * nullable_index_of_node = ActionsDAGUtil::convertNodeType(
-            actions_dag, index_of_node, nullable_result_type->getName(), index_of_node->result_name);
+            actions_dag, index_of_node, nullable_result_type, index_of_node->result_name);
         const auto * null_const_node = addColumnToActionsDAG(actions_dag, nullable_result_type, Field());
 
         const auto * str_is_null_node = toFunctionNode(actions_dag, "isNull", {str_arg});

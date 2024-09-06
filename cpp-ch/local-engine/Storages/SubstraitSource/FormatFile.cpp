@@ -36,6 +36,7 @@
 #include <Storages/SubstraitSource/TextFormatFile.h>
 #endif
 
+#include <Common/GlutenConfig.h>
 #include <Storages/SubstraitSource/JSONFormatFile.h>
 
 namespace DB
@@ -54,17 +55,13 @@ FormatFile::FormatFile(
     : context(context_), file_info(file_info_), read_buffer_builder(read_buffer_builder_)
 {
     PartitionValues part_vals = GlutenStringUtils::parsePartitionTablePath(file_info.uri_file());
-    String partition_values_str = "[";
     for (size_t i = 0; i < part_vals.size(); ++i)
     {
         const auto & part = part_vals[i];
         partition_keys.push_back(part.first);
         partition_values[part.first] = part.second;
-        if (i > 0)
-            partition_values_str += ", ";
-        partition_values_str += part.first + "=" + part.second;
     }
-    partition_values_str += "]";
+
     LOG_INFO(
         &Poco::Logger::get("FormatFile"),
         "Reading File path: {}, format: {}, range: {}, partition_index: {}, partition_values: {}",
@@ -72,7 +69,7 @@ FormatFile::FormatFile(
         file_info.file_format_case(),
         std::to_string(file_info.start()) + "-" + std::to_string(file_info.start() + file_info.length()),
         file_info.partition_index(),
-        partition_values_str);
+        GlutenStringUtils::dumpPartitionValues(part_vals));
 }
 
 FormatFilePtr FormatFileUtil::createFile(
@@ -81,8 +78,8 @@ FormatFilePtr FormatFileUtil::createFile(
 #if USE_PARQUET
     if (file.has_parquet())
     {
-        bool useLocalFormat = context->getConfigRef().getBool("use_local_format", false);
-        return std::make_shared<ParquetFormatFile>(context, file, read_buffer_builder, useLocalFormat);
+        auto config = ExecutorConfig::loadFromContext(context);
+        return std::make_shared<ParquetFormatFile>(context, file, read_buffer_builder, config.use_local_format);
     }
 #endif
 
@@ -94,8 +91,8 @@ FormatFilePtr FormatFileUtil::createFile(
 #if USE_HIVE
     if (file.has_text())
     {
-        if (context->getSettings().has(BackendInitializerUtil::USE_EXCEL_PARSER)
-            && context->getSettings().getString(BackendInitializerUtil::USE_EXCEL_PARSER) == "'true'")
+        if (context->getSettingsRef().has(BackendInitializerUtil::USE_EXCEL_PARSER)
+            && context->getSettingsRef().getString(BackendInitializerUtil::USE_EXCEL_PARSER) == "'true'")
             return std::make_shared<ExcelTextFormatFile>(context, file, read_buffer_builder);
         else
             return std::make_shared<TextFormatFile>(context, file, read_buffer_builder);

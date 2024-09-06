@@ -22,7 +22,7 @@
 namespace local_engine
 {
 DB::ActionsDAG::NodeRawConstPtrs
-NtileParser::parseFunctionArguments(const CommonFunctionInfo & func_info, const String & /*ch_func_name*/, DB::ActionsDAGPtr & actions_dag) const
+NtileParser::parseFunctionArguments(const CommonFunctionInfo & func_info, DB::ActionsDAG & actions_dag) const
 {
     if (func_info.arguments.size() != 1)
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "Function ntile takes exactly one argument");
@@ -32,7 +32,7 @@ NtileParser::parseFunctionArguments(const CommonFunctionInfo & func_info, const 
     auto [data_type, field] = parseLiteral(arg0.literal());
     if (!(DB::WhichDataType(data_type).isInt32()))
         throw Exception(ErrorCodes::BAD_ARGUMENTS, "ntile's argument must be i32");
-    Int32 field_index = static_cast<Int32>(field.get<Int32>());
+    Int32 field_index = static_cast<Int32>(field.safeGet<Int32>());
     // For CH, the data type of the args[0] must be the UInt32
     const auto * index_node = addColumnToActionsDAG(actions_dag, std::make_shared<DataTypeUInt32>(), field_index);
     args.emplace_back(index_node);

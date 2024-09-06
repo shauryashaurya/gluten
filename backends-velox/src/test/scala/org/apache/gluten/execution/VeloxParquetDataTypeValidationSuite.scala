@@ -427,22 +427,6 @@ class VeloxParquetDataTypeValidationSuite extends VeloxWholeStageTransformerSuit
     }
   }
 
-  test("Force complex type scan fallback") {
-    withSQLConf(("spark.gluten.sql.complexType.scan.fallback.enabled", "true")) {
-      val df = spark.sql("select struct from type1")
-      val executedPlan = getExecutedPlan(df)
-      assert(!executedPlan.exists(plan => plan.isInstanceOf[BatchScanExecTransformer]))
-    }
-  }
-
-  test("Force timestamp type scan fallback") {
-    withSQLConf(("spark.gluten.sql.parquet.timestampType.scan.fallback.enabled", "true")) {
-      val df = spark.sql("select timestamp from type1")
-      val executedPlan = getExecutedPlan(df)
-      assert(!executedPlan.exists(plan => plan.isInstanceOf[BatchScanExecTransformer]))
-    }
-  }
-
   test("Decimal type") {
     // Validation: BatchScan Project Aggregate Expand Sort Limit
     runQueryAndCompare(
@@ -484,7 +468,6 @@ class VeloxParquetDataTypeValidationSuite extends VeloxWholeStageTransformerSuit
           val df = spark.read
             .format("parquet")
             .load(data_path)
-            .drop("timestamp")
             .drop("array")
             .drop("struct")
             .drop("map")

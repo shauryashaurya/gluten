@@ -21,7 +21,7 @@ transforms Spark plan to Substrait plan, and then send the Substrait plan to the
 
 The Gluten codes consist of two parts: the C++ codes and the Java/Scala codes. 
 1. All C++ codes are placed under the directory of `${GLUTEN_HOME}/cpp`, the Java/Scala codes are placed under several directories, such as
-  `${GLUTEN_HOME}/gluten-core` `${GLUTEN_HOME}/gluten-data` `${GLUTEN_HOME}/backends-velox`.
+  `${GLUTEN_HOME}/gluten-substrait` `${GLUTEN_HOME}/gluten-data` `${GLUTEN_HOME}/backends-velox`.
 2. The Java/Scala codes are responsible for validating and transforming the execution plan. Source data should also be provided, the source data may
   come from files or other forms such as networks.
 3. The C++ codes take the Substrait plan and the source data as inputs and transform the Substrait plan to the corresponding backend plan. If the backend
@@ -163,7 +163,7 @@ wait to add
 
 # How to track the memory exhaust problem
 
-When your gluten spark jobs failed because of OOM, you can track the memory allocation's call stack by configuring `spark.gluten.backtrace.allocation = true`.
+When your gluten spark jobs failed because of OOM, you can track the memory allocation's call stack by configuring `spark.gluten.memory.backtrace.allocation = true`.
 The above configuration will use `BacktraceAllocationListener` wrapping from `SparkAllocationListener` to create `VeloxMemoryManager`.
 
 `BacktraceAllocationListener` will check every allocation, if a single allocation bytes exceeds a fixed value or the accumulative allocation bytes exceeds 1/2/3...G,

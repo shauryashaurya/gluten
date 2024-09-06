@@ -17,8 +17,8 @@
 package org.apache.gluten.vectorized
 
 import org.apache.gluten.GlutenConfig
-import org.apache.gluten.exec.Runtimes
 import org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators
+import org.apache.gluten.runtime.Runtimes
 import org.apache.gluten.utils.ArrowAbiUtil
 
 import org.apache.spark.SparkEnv
@@ -30,7 +30,7 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.utils.SparkSchemaUtil
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.{TaskResource, TaskResources}
+import org.apache.spark.task.{TaskResource, TaskResources}
 
 import org.apache.arrow.c.ArrowSchema
 import org.apache.arrow.memory.BufferAllocator
@@ -47,12 +47,13 @@ class ColumnarBatchSerializer(
     readBatchNumRows: SQLMetric,
     numOutputRows: SQLMetric,
     deserializeTime: SQLMetric,
-    decompressTime: Option[SQLMetric],
+    decompressTime: SQLMetric,
     isSort: Boolean)
   extends Serializer
   with Serializable {
 
-  private val shuffleWriterType = if (isSort) "sort" else "hash"
+  private val shuffleWriterType =
+    if (isSort) GlutenConfig.GLUTEN_SORT_SHUFFLE_WRITER else GlutenConfig.GLUTEN_HASH_SHUFFLE_WRITER
 
   /** Creates a new [[SerializerInstance]]. */
   override def newInstance(): SerializerInstance = {
@@ -73,7 +74,7 @@ private class ColumnarBatchSerializerInstance(
     readBatchNumRows: SQLMetric,
     numOutputRows: SQLMetric,
     deserializeTime: SQLMetric,
-    decompressTime: Option[SQLMetric],
+    decompressTime: SQLMetric,
     shuffleWriterType: String)
   extends SerializerInstance
   with Logging {
@@ -113,10 +114,7 @@ private class ColumnarBatchSerializerInstance(
       val readerMetrics = new ShuffleReaderMetrics()
       jniWrapper.populateMetrics(shuffleReaderHandle, readerMetrics)
       deserializeTime += readerMetrics.getDeserializeTime
-      decompressTime match {
-        case Some(t) => t += readerMetrics.getDecompressTime
-        case None =>
-      }
+      decompressTime += readerMetrics.getDecompressTime
 
       jniWrapper.close(shuffleReaderHandle)
       cSchema.release()

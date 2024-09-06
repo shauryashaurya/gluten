@@ -20,6 +20,7 @@ import org.apache.spark.SparkConf
 import org.apache.spark.sql.SaveMode
 import org.apache.spark.sql.delta.catalog.ClickHouseTableV2
 import org.apache.spark.sql.delta.files.TahoeFileIndex
+import org.apache.spark.sql.execution.LocalTableScanExec
 import org.apache.spark.sql.execution.adaptive.AdaptiveSparkPlanHelper
 import org.apache.spark.sql.execution.datasources.v2.clickhouse.metadata.AddMergeTreeParts
 import org.apache.spark.sql.functions._
@@ -281,8 +282,8 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
       .format("clickhouse")
       .load(dataPath)
       .where("l_shipdate = date'1998-09-02'")
-      .collect()
-    assertResult(110501)(result.apply(0).get(0))
+      .count()
+    assertResult(183L)(result)
   }
 
   test("test mergetree path based insert overwrite partitioned table with small table, static") {
@@ -758,8 +759,8 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
 
     sourceDF.write
       .format("clickhouse")
-      .partitionBy("l_shipdate")
-      .option("clickhouse.orderByKey", "l_orderkey,l_returnflag")
+      .partitionBy("l_returnflag")
+      .option("clickhouse.orderByKey", "l_orderkey")
       .option("clickhouse.primaryKey", "l_orderkey")
       .option("clickhouse.numBuckets", "4")
       .option("clickhouse.bucketColumnNames", "l_partkey")
@@ -806,13 +807,13 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
         val buckets = ClickHouseTableV2.getTable(fileIndex.deltaLog).bucketOption
         assert(buckets.isDefined)
         assertResult(4)(buckets.get.numBuckets)
-        assertResult("l_orderkey,l_returnflag")(
+        assertResult("l_orderkey")(
           buckets.get.sortColumnNames
             .mkString(","))
         assertResult("l_partkey")(
           buckets.get.bucketColumnNames
             .mkString(","))
-        assertResult("l_orderkey,l_returnflag")(
+        assertResult("l_orderkey")(
           ClickHouseTableV2
             .getTable(fileIndex.deltaLog)
             .orderByKeyOption
@@ -825,20 +826,21 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
             .get
             .mkString(","))
         assertResult(1)(ClickHouseTableV2.getTable(fileIndex.deltaLog).partitionColumns.size)
-        assertResult("l_shipdate")(
+        assertResult("l_returnflag")(
           ClickHouseTableV2
             .getTable(fileIndex.deltaLog)
             .partitionColumns
             .head)
         val addFiles = fileIndex.matchingFiles(Nil, Nil).map(f => f.asInstanceOf[AddMergeTreeParts])
 
-        assertResult(10089)(addFiles.size)
+        assertResult(12)(addFiles.size)
         assertResult(600572)(addFiles.map(_.rows).sum)
-        assertResult(4)(addFiles.count(_.partitionValues("l_shipdate").equals("1992-06-01")))
-        assertResult(4)(addFiles.count(_.partitionValues("l_shipdate").equals("1993-01-01")))
-        assertResult(4)(addFiles.count(_.partitionValues("l_shipdate").equals("1995-01-21")))
-        assertResult(1)(addFiles.count(
-          f => f.partitionValues("l_shipdate").equals("1995-01-21") && f.bucketNum.equals("00000")))
+        assertResult(4)(addFiles.count(_.partitionValues("l_returnflag").equals("A")))
+        assertResult(4)(addFiles.count(_.partitionValues("l_returnflag").equals("N")))
+        assertResult(4)(addFiles.count(_.partitionValues("l_returnflag").equals("R")))
+        assertResult(1)(
+          addFiles.count(
+            f => f.partitionValues("l_returnflag").equals("A") && f.bucketNum.equals("00000")))
     }
     // check part pruning effect of filter on bucket column
     val df = spark.sql(s"""
@@ -853,7 +855,7 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
       .flatMap(partition => partition.asInstanceOf[GlutenMergeTreePartition].partList)
       .map(_.name)
       .distinct
-    assertResult(4)(touchedParts.size)
+    assertResult(12)(touchedParts.size)
 
     // test upsert on partitioned & bucketed table
     upsertSourceTableAndCheck(dataPath)
@@ -1304,6 +1306,35 @@ class GlutenClickHouseMergeTreePathBasedWriteSuite
 
     dataFileList = dataPathFile.list(fileFilter)
     assertResult(6)(dataFileList.length)
+  }
+
+  test("GLUTEN-6378: Support delta count optimizer for the MergeTree format") {
+    val dataPath = s"$basePath/lineitem_mergetree_count_opti"
+    clearDataPath(dataPath)
+
+    val sourceDF = spark.sql(s"""
+                                |select * from lineitem
+                                |""".stripMargin)
+
+    sourceDF.write
+      .format("clickhouse")
+      .partitionBy("l_shipdate", "l_returnflag")
+      .option("clickhouse.orderByKey", "l_orderkey")
+      .option("clickhouse.primaryKey", "l_orderkey")
+      .mode(SaveMode.Append)
+      .save(dataPath)
+
+    val df = spark.read
+      .format("clickhouse")
+      .load(dataPath)
+      .groupBy()
+      .count()
+    val result = df.collect()
+    assertResult(600572)(result(0).getLong(0))
+    // Spark 3.2 + Delta 2.0 does not support this feature
+    if (!sparkVersion.equals("3.2")) {
+      assert(df.queryExecution.executedPlan.isInstanceOf[LocalTableScanExec])
+    }
   }
 }
 // scalastyle:off line.size.limit

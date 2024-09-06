@@ -6,19 +6,19 @@ AdaptiveSparkPlan (59)
       +- ^ InputIteratorTransformer (35)
          +- ShuffleQueryStage (33), Statistics(X)
             +- ColumnarExchange (32)
-               +- VeloxAppendBatches (31)
+               +- VeloxResizeBatches (31)
                   +- ^ RegularHashAggregateExecTransformer (29)
                      +- ^ InputIteratorTransformer (28)
                         +- ShuffleQueryStage (26), Statistics(X)
                            +- ColumnarExchange (25)
-                              +- VeloxAppendBatches (24)
+                              +- VeloxResizeBatches (24)
                                  +- ^ ProjectExecTransformer (22)
                                     +- ^ FlushableHashAggregateExecTransformer (21)
                                        +- ^ RegularHashAggregateExecTransformer (20)
                                           +- ^ InputIteratorTransformer (19)
                                              +- ShuffleQueryStage (17), Statistics(X)
                                                 +- ColumnarExchange (16)
-                                                   +- VeloxAppendBatches (15)
+                                                   +- VeloxResizeBatches (15)
                                                       +- ^ ProjectExecTransformer (13)
                                                          +- ^ FlushableHashAggregateExecTransformer (12)
                                                             +- ^ ProjectExecTransformer (11)
@@ -117,13 +117,13 @@ Input [4]: [p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
 Arguments: false
 
-(15) VeloxAppendBatches
+(15) VeloxResizeBatches
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
-Arguments: X
+Arguments: X, X
 
 (16) ColumnarExchange
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
-Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, ps_suppkey#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, ps_suppkey#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, ps_suppkey#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, ps_suppkey#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (17) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, ps_suppkey#X]
@@ -157,13 +157,13 @@ Input [4]: [p_brand#X, p_type#X, p_size#X, count#X]
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
 Arguments: false
 
-(24) VeloxAppendBatches
+(24) VeloxResizeBatches
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
-Arguments: X
+Arguments: X, X
 
 (25) ColumnarExchange
 Input [5]: [hash_partition_key#X, p_brand#X, p_type#X, p_size#X, count#X]
-Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, count#X], [plan_id=X], [id=#X]
+Arguments: hashpartitioning(p_brand#X, p_type#X, p_size#X, 1), ENSURE_REQUIREMENTS, [p_brand#X, p_type#X, p_size#X, count#X], [plan_id=X], [shuffle_writer_type=hash]
 
 (26) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, count#X]
@@ -186,13 +186,13 @@ Results [4]: [p_brand#X, p_type#X, p_size#X, count(ps_suppkey#X)#X AS supplier_c
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
 Arguments: false
 
-(31) VeloxAppendBatches
+(31) VeloxResizeBatches
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
-Arguments: X
+Arguments: X, X
 
 (32) ColumnarExchange
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
-Arguments: rangepartitioning(supplier_cnt#X DESC NULLS LAST, p_brand#X ASC NULLS FIRST, p_type#X ASC NULLS FIRST, p_size#X ASC NULLS FIRST, 1), ENSURE_REQUIREMENTS, [plan_id=X], [id=#X]
+Arguments: rangepartitioning(supplier_cnt#X DESC NULLS LAST, p_brand#X ASC NULLS FIRST, p_type#X ASC NULLS FIRST, p_size#X ASC NULLS FIRST, 1), ENSURE_REQUIREMENTS, [plan_id=X], [shuffle_writer_type=hash]
 
 (33) ShuffleQueryStage
 Output [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]

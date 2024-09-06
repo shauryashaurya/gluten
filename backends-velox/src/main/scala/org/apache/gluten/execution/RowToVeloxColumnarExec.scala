@@ -17,13 +17,11 @@
 package org.apache.gluten.execution
 
 import org.apache.gluten.GlutenConfig
-import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.columnarbatch.ColumnarBatches
-import org.apache.gluten.exception.GlutenException
-import org.apache.gluten.exec.Runtimes
+import org.apache.gluten.iterator.Iterators
 import org.apache.gluten.memory.arrow.alloc.ArrowBufferAllocators
+import org.apache.gluten.runtime.Runtimes
 import org.apache.gluten.utils.ArrowAbiUtil
-import org.apache.gluten.utils.iterator.Iterators
 import org.apache.gluten.vectorized._
 
 import org.apache.spark.broadcast.Broadcast
@@ -36,8 +34,8 @@ import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.StructType
 import org.apache.spark.sql.utils.SparkArrowUtil
 import org.apache.spark.sql.vectorized.ColumnarBatch
+import org.apache.spark.task.TaskResources
 import org.apache.spark.unsafe.Platform
-import org.apache.spark.util.TaskResources
 
 import org.apache.arrow.c.ArrowSchema
 import org.apache.arrow.memory.ArrowBuf
@@ -47,13 +45,6 @@ import scala.collection.mutable.ListBuffer
 case class RowToVeloxColumnarExec(child: SparkPlan) extends RowToColumnarExecBase(child = child) {
 
   override def doExecuteColumnarInternal(): RDD[ColumnarBatch] = {
-    BackendsApiManager.getValidatorApiInstance.doSchemaValidate(schema).foreach {
-      reason =>
-        throw new GlutenException(
-          s"Input schema contains unsupported type when convert row to columnar for $schema " +
-            s"due to $reason")
-    }
-
     val numInputRows = longMetric("numInputRows")
     val numOutputBatches = longMetric("numOutputBatches")
     val convertTime = longMetric("convertTime")
@@ -101,6 +92,23 @@ case class RowToVeloxColumnarExec(child: SparkPlan) extends RowToColumnarExecBas
 }
 
 object RowToVeloxColumnarExec {
+
+  def toColumnarBatchIterator(
+      it: Iterator[InternalRow],
+      schema: StructType,
+      columnBatchSize: Int): Iterator[ColumnarBatch] = {
+    val numInputRows = new SQLMetric("numInputRows")
+    val numOutputBatches = new SQLMetric("numOutputBatches")
+    val convertTime = new SQLMetric("convertTime")
+    RowToVeloxColumnarExec.toColumnarBatchIterator(
+      it,
+      schema,
+      numInputRows,
+      numOutputBatches,
+      convertTime,
+      columnBatchSize)
+  }
+
   def toColumnarBatchIterator(
       it: Iterator[InternalRow],
       schema: StructType,
