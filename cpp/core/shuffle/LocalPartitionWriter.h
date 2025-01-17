@@ -17,12 +17,11 @@
 
 #pragma once
 
-#include <arrow/filesystem/localfs.h>
 #include <arrow/io/api.h>
 
 #include "shuffle/PartitionWriter.h"
 #include "shuffle/ShuffleWriter.h"
-#include "utils/macros.h"
+#include "utils/Macros.h"
 
 namespace gluten {
 

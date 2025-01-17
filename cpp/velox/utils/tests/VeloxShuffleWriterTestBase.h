@@ -90,6 +90,10 @@ class VeloxShuffleWriterTestBase : public facebook::velox::test::VectorTestBase 
 
  protected:
   void setUp() {
+    if (!isRegisteredNamedVectorSerde(facebook::velox::VectorSerde::Kind::kPresto)) {
+      // RSS shuffle serde.
+      facebook::velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
+    }
     // Set up test data.
     children1_ = {
         makeNullableFlatVector<int8_t>({1, 2, 3, std::nullopt, 4, std::nullopt, 5, 6, std::nullopt, 7}),
@@ -257,7 +261,7 @@ class VeloxShuffleWriterTest : public ::testing::TestWithParam<ShuffleTestParams
 
     ShuffleTestParams params = GetParam();
     shuffleWriterOptions_.useRadixSort = params.useRadixSort;
-    shuffleWriterOptions_.compressionBufferSize = params.compressionBufferSize;
+    shuffleWriterOptions_.sortEvictBufferSize = params.compressionBufferSize;
     partitionWriterOptions_.compressionType = params.compressionType;
     switch (partitionWriterOptions_.compressionType) {
       case arrow::Compression::UNCOMPRESSED:
@@ -356,12 +360,13 @@ class VeloxShuffleWriterTest : public ::testing::TestWithParam<ShuffleTestParams
       facebook::velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
     }
     // Set batchSize to a large value to make all batches are merged by reader.
-    auto deserializerFactory = std::make_unique<gluten::VeloxColumnarBatchDeserializerFactory>(
+    auto deserializerFactory = std::make_unique<gluten::VeloxShuffleReaderDeserializerFactory>(
         schema,
         std::move(codec),
         veloxCompressionType,
         rowType,
         std::numeric_limits<int32_t>::max(),
+        kDefaultReadBufferSize,
         defaultArrowMemoryPool().get(),
         pool_,
         GetParam().shuffleWriterType);
@@ -492,13 +497,13 @@ class RangePartitioningShuffleWriter : public MultiplePartitioningShuffleWriter 
 
     auto pid1 = makeRowVector({makeFlatVector<int32_t>({0, 1, 0, 1, 0, 1, 0, 1, 0, 1})});
     auto rangeVector1 = makeRowVector(inputVector1_->children());
-    compositeBatch1_ = CompositeColumnarBatch::create(
-        {std::make_shared<VeloxColumnarBatch>(pid1), std::make_shared<VeloxColumnarBatch>(rangeVector1)});
+    compositeBatch1_ = VeloxColumnarBatch::compose(
+        pool(), {std::make_shared<VeloxColumnarBatch>(pid1), std::make_shared<VeloxColumnarBatch>(rangeVector1)});
 
     auto pid2 = makeRowVector({makeFlatVector<int32_t>({0, 1})});
     auto rangeVector2 = makeRowVector(inputVector2_->children());
-    compositeBatch2_ = CompositeColumnarBatch::create(
-        {std::make_shared<VeloxColumnarBatch>(pid2), std::make_shared<VeloxColumnarBatch>(rangeVector2)});
+    compositeBatch2_ = VeloxColumnarBatch::compose(
+        pool(), {std::make_shared<VeloxColumnarBatch>(pid2), std::make_shared<VeloxColumnarBatch>(rangeVector2)});
   }
 
   std::shared_ptr<VeloxShuffleWriter> createShuffleWriter(arrow::MemoryPool* arrowPool) override {

@@ -16,12 +16,15 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.utils.UTSystemParameters
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.{DataFrame, Row, TestUtils}
+import org.apache.spark.sql.catalyst.expressions.{Expression, GetJsonObject, Literal}
 import org.apache.spark.sql.catalyst.optimizer.{ConstantFolding, NullPropagation}
+import org.apache.spark.sql.catalyst.plans.logical.{Filter, LogicalPlan, Project}
+import org.apache.spark.sql.execution.datasources.v2.clickhouse.ClickHouseConfig
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
@@ -34,7 +37,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
 
   protected val tablesPath: String = basePath + "/tpch-data"
   protected val tpchQueries: String =
-    rootPath + "../../../../gluten-core/src/test/resources/tpch-queries"
+    rootPath + "../../../../tools/gluten-it/common/src/main/resources/tpch-queries"
   protected val queriesResults: String = rootPath + "queries-output"
 
   private var parquetPath: String = _
@@ -53,8 +56,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       .set("spark.databricks.delta.snapshotPartitions", "1")
       .set("spark.databricks.delta.properties.defaults.checkpointInterval", "5")
       .set("spark.databricks.delta.stalenessLimit", "3600000")
-      .set("spark.gluten.sql.columnar.columnartorow", "true")
-      .set("spark.gluten.sql.columnar.backend.ch.worker.id", "1")
+      .set(ClickHouseConfig.CLICKHOUSE_WORKER_ID, "1")
       .set(GlutenConfig.GLUTEN_LIB_PATH, UTSystemParameters.clickHouseLibPath)
       .set("spark.gluten.sql.columnar.iterator", "true")
       .set("spark.gluten.sql.columnar.hashagg.enablefinal", "true")
@@ -75,9 +77,9 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
 
     val schema = StructType(
       Array(
-        StructField("double_field1", DoubleType, true),
-        StructField("int_field1", IntegerType, true),
-        StructField("string_field1", StringType, true)
+        StructField("double_field1", DoubleType, nullable = true),
+        StructField("int_field1", IntegerType, nullable = true),
+        StructField("string_field1", StringType, nullable = true)
       ))
     val data = sparkContext.parallelize(
       Seq(
@@ -89,7 +91,9 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
         Row(1.011, 5, "{\"a\":\"b\", \"x\":{\"i\":1}}"),
         Row(1.011, 5, "{\"a\":\"b\", \"x\":{\"i\":2}}"),
         Row(1.011, 5, "{\"a\":1, \"x\":{\"i\":2}}"),
-        Row(1.0, 5, "{\"a\":\"{\\\"x\\\":5}\"}")
+        Row(1.0, 5, "{\"a\":\"{\\\"x\\\":5}\"}"),
+        Row(1.0, 6, "{\"a\":{\"y\": 5, \"z\": {\"m\":1, \"n\": {\"p\": \"k\"}}}"),
+        Row(1.0, 7, "{\"a\":[{\"y\": 5}, {\"z\":[{\"m\":1, \"n\":{\"p\":\"k\"}}]}]}")
       ))
     val dfParquet = spark.createDataFrame(data, schema)
     dfParquet
@@ -103,9 +107,9 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
 
     val dateSchema = StructType(
       Array(
-        StructField("ts", IntegerType, true),
-        StructField("day", DateType, true),
-        StructField("weekday_abbr", StringType, true)
+        StructField("ts", IntegerType, nullable = true),
+        StructField("day", DateType, nullable = true),
+        StructField("weekday_abbr", StringType, nullable = true)
       )
     )
     val dateRows = sparkContext.parallelize(
@@ -142,7 +146,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     val str2MapFilePath = str2Mapfile.getAbsolutePath
     val str2MapSchema = StructType(
       Array(
-        StructField("str", StringType, true)
+        StructField("str", StringType, nullable = true)
       ))
     val str2MapData = sparkContext.parallelize(
       Seq(
@@ -165,12 +169,12 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       .parquet(str2MapFilePath)
     spark.catalog.createTable("str2map_table", str2MapFilePath, fileFormat)
 
-    val urlFile = Files.createTempFile("", ".parquet").toFile()
+    val urlFile = Files.createTempFile("", ".parquet").toFile
     urlFile.deleteOnExit()
     val urlFilePath = urlFile.getAbsolutePath
     val urlTalbeSchema = StructType(
       Array(
-        StructField("url", StringType, true)
+        StructField("url", StringType, nullable = true)
       )
     )
     val urlTableData = sparkContext.parallelize(
@@ -267,6 +271,85 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     }
   }
 
+  test("GLUTEN-8304: Optimize nested get_json_object") {
+    def checkExpression(expr: Expression, path: String): Boolean = {
+      expr match {
+        case g: GetJsonObject
+            if g.path.isInstanceOf[Literal] && g.path.dataType.isInstanceOf[StringType] =>
+          g.path.asInstanceOf[Literal].value.toString.equals(path) || g.children.exists(
+            c => checkExpression(c, path))
+        case _ =>
+          if (expr.children.isEmpty) {
+            false
+          } else {
+            expr.children.exists(c => checkExpression(c, path))
+          }
+      }
+    }
+    def checkPlan(plan: LogicalPlan, path: String): Boolean = plan match {
+      case p: Project =>
+        p.projectList.exists(x => checkExpression(x, path)) || checkPlan(p.child, path)
+      case f: Filter =>
+        checkExpression(f.condition, path) || checkPlan(f.child, path)
+      case _ =>
+        if (plan.children.isEmpty) {
+          false
+        } else {
+          plan.children.exists(c => checkPlan(c, path))
+        }
+    }
+    def checkGetJsonObjectPath(df: DataFrame, path: String): Boolean = {
+      checkPlan(df.queryExecution.analyzed, path)
+    }
+    withSQLConf(("spark.gluten.sql.collapseGetJsonObject.enabled", "true")) {
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(string_field1, '$.a'), '$.y') " +
+          " from json_test where int_field1 = 6") {
+        x => assert(checkGetJsonObjectPath(x, "$.a.y"))
+      }
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(string_field1, '$[a]'), '$[y]') " +
+          " from json_test where int_field1 = 6") {
+        x => assert(checkGetJsonObjectPath(x, "$[a][y]"))
+      }
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(get_json_object(string_field1, " +
+          "'$.a'), '$.y'), '$.z') from json_test where int_field1 = 6") {
+        x => assert(checkGetJsonObjectPath(x, "$.a.y.z"))
+      }
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(get_json_object(string_field1, '$.a')," +
+          " string_field1), '$.z') from json_test where int_field1 = 6",
+        noFallBack = false
+      )(x => assert(checkGetJsonObjectPath(x, "$.a") && checkGetJsonObjectPath(x, "$.z")))
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(get_json_object(string_field1, " +
+          " string_field1), '$.a'), '$.z') from json_test where int_field1 = 6",
+        noFallBack = false
+      )(x => assert(checkGetJsonObjectPath(x, "$.a.z")))
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(get_json_object(" +
+          " substring(string_field1, 10), '$.a'), '$.z'), string_field1) " +
+          " from json_test where int_field1 = 6",
+        noFallBack = false
+      )(x => assert(checkGetJsonObjectPath(x, "$.a.z")))
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(string_field1, '$.a[0]'), '$.y') " +
+          " from json_test where int_field1 = 7") {
+        x => assert(checkGetJsonObjectPath(x, "$.a[0].y"))
+      }
+      runQueryAndCompare(
+        "select get_json_object(get_json_object(get_json_object(string_field1, " +
+          " '$.a[1]'), '$.z[1]'), '$.n') from json_test where int_field1 = 7") {
+        x => assert(checkGetJsonObjectPath(x, "$.a[1].z[1].n"))
+      }
+      runQueryAndCompare(
+        "select * from json_test where " +
+          " get_json_object(get_json_object(get_json_object(string_field1, '$.a'), " +
+          "'$.y'), '$.z') != null")(x => assert(checkGetJsonObjectPath(x, "$.a.y.z")))
+    }
+  }
+
   test("Test get_json_object 10") {
     runQueryAndCompare("SELECT get_json_object(string_field1, '$.12345') from json_test") { _ => }
     runQueryAndCompare("SELECT get_json_object(string_field1, '$.123.abc') from json_test") { _ => }
@@ -285,6 +368,17 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     runQueryAndCompare(
       "SELECT string_field1 from json_test where" +
         " get_json_object(string_field1, '$.a') is not null") { _ => }
+  }
+
+  test("Test get_json_object 12") {
+    runQueryAndCompare(
+      "SELECT get_json_object(string_field1, '$.a[*].y') from json_test where int_field1 = 7") {
+      _ =>
+    }
+    runQueryAndCompare(
+      "select get_json_object(string_field1, '$.a[*].z.n.p') from json_test where int_field1 = 7") {
+      _ =>
+    }
   }
 
   test("Test covar_samp") {
@@ -504,7 +598,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
     def checkResult(df: DataFrame, exceptedResult: Seq[Row]): Unit = {
       // check the result
       val result = df.collect()
-      assert(result.size == exceptedResult.size)
+      assert(result.length === exceptedResult.size)
       TestUtils.compareAnswers(result, exceptedResult)
     }
 
@@ -607,7 +701,7 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
   test("test common subexpression eliminate") {
     def checkOperatorCount[T <: TransformSupport](count: Int)(df: DataFrame)(implicit
         tag: ClassTag[T]): Unit = {
-      if (sparkVersion.equals("3.3")) {
+      if (spark33) {
         assert(
           getExecutedPlan(df).count(
             plan => {
@@ -656,6 +750,24 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       runQueryAndCompare(
         "select id from range(10) " +
           "order by hash(id%10), hash(hash(id%10))") {
+        df => checkOperatorCount[ProjectExecTransformer](3)(df)
+      }
+
+      runQueryAndCompare(s"""
+                            |SELECT 'test' AS test
+                            |  , Sum(CASE
+                            |    WHEN name = '2' THEN 0
+                            |      ELSE id
+                            |    END) AS c1
+                            |  , Sum(CASE
+                            |    WHEN name = '2' THEN id
+                            |      ELSE 0
+                            |    END) AS c2
+                            | , CASE WHEN name = '2' THEN Sum(id) ELSE 0
+                            |   END AS c3
+                            |FROM (select id, cast(id as string) name from range(10))
+                            |GROUP BY name
+                            |""".stripMargin) {
         df => checkOperatorCount[ProjectExecTransformer](3)(df)
       }
     }
@@ -723,10 +835,10 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
       val transform_sql = "select transform(ids, x -> x + 1) from tb_array"
       runQueryAndCompare(transform_sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
 
-      val filter_sql = "select filter(ids, x -> x % 2 == 1) from tb_array";
+      val filter_sql = "select filter(ids, x -> x % 2 == 1) from tb_array"
       runQueryAndCompare(filter_sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
 
-      val aggregate_sql = "select ids, aggregate(ids, 3, (acc, x) -> acc + x) from tb_array";
+      val aggregate_sql = "select ids, aggregate(ids, 3, (acc, x) -> acc + x) from tb_array"
       runQueryAndCompare(aggregate_sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
     }
   }
@@ -779,5 +891,108 @@ class GlutenFunctionValidateSuite extends GlutenClickHouseWholeStageTransformerS
                 |FROM range(10)
                 |""".stripMargin
     runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("test function arrays_zip") {
+    val sql = """
+                |SELECT arrays_zip(array(id, id+1, id+2), array(id, id-1, id-2))
+                |FROM range(10)
+                |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("test function timestamp_seconds/timestamp_millis/timestamp_micros") {
+    val sql = """
+                |SELECT
+                |  id,
+                |  timestamp_seconds(1725453790 + id) as ts_seconds,
+                |  timestamp_millis(1725453790123 + id) as ts_millis,
+                |  timestamp_micros(1725453790123456 + id) as ts_micros
+                |from range(10);
+                |""".stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("GLUTEN-7426 get_json_object") {
+    val sql = """
+                |select
+                |get_json_object(a, '$.a b'),
+                |get_json_object(a, '$.a b '),
+                |get_json_object(a, '$.a b c'),
+                |get_json_object(a, '$.a 1 c'),
+                |get_json_object(a, '$.1 '),
+                |get_json_object(a, '$.1 2'),
+                |get_json_object(a, '$.1 2 c')
+                |from values('{"a b":1}'), ('{"a b ":1}'), ('{"a b c":1}')
+                |, ('{"a 1 c":1}'), ('{"1 ":1}'), ('{"1 2":1}'), ('{"1 2 c":1}')
+                |as data(a)
+    """.stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("GLUTEN-7432 get_json_object returns array") {
+    val sql = """
+                |select
+                |get_json_object(a, '$.a[*].x')
+                |from values('{"a":[{"x":1}, {"x":5}]}'), ('{"a":[{"x":1}]}')
+                |as data(a)
+    """.stripMargin
+    runQueryAndCompare(sql)(checkGlutenOperatorMatch[ProjectExecTransformer])
+  }
+
+  test("GLUTEN-7455 negative modulo") {
+    withTable("test_7455") {
+      spark.sql("create table test_7455(x bigint) using parquet")
+      val insert_sql =
+        """
+          |insert into test_7455 values
+          |(327696126396414574)
+          |,(618162455457852376)
+          |,(-1)
+          |,(-2)
+          |""".stripMargin
+      spark.sql(insert_sql)
+      val sql =
+        """
+          |select x,
+          |x % 4294967296,
+          |x % -4294967296,
+          |x % 4294967295,
+          |x % -4294967295,
+          |x % 100,
+          |x % -100
+          |from test_7455
+          |""".stripMargin
+      compareResultsAgainstVanillaSpark(sql, true, { _ => })
+    }
+  }
+
+  test("GLUTEN-7796 cast bool to string") {
+    val sql = "select cast(id % 2 = 1 as string) from range(10)"
+    compareResultsAgainstVanillaSpark(sql, true, { _ => })
+  }
+
+  test("Test transform_keys/transform_values") {
+    val sql = """
+                |select id, sort_array(map_entries(m1)), sort_array(map_entries(m2)) from(
+                |select id, first(m1) as m1, first(m2) as m2 from(
+                |select
+                |  id,
+                |  transform_keys(map_from_arrays(array(id+1, id+2, id+3),
+                |    array(1, id+2, 3)), (k, v) -> k + 1) as m1,
+                |  transform_values(map_from_arrays(array(id+1, id+2, id+3),
+                |    array(1, id+2, 3)), (k, v) -> v + 1) as m2
+                |from range(10)
+                |) group by id
+                |) order by id
+                |""".stripMargin
+
+    def checkProjects(df: DataFrame): Unit = {
+      val projects = collectWithSubqueries(df.queryExecution.executedPlan) {
+        case e: ProjectExecTransformer => e
+      }
+      assert(projects.size >= 1)
+    }
+    compareResultsAgainstVanillaSpark(sql, true, checkProjects, false)
   }
 }

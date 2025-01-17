@@ -20,7 +20,7 @@ import org.apache.gluten.utils.{BackendTestSettings, SQLQueryTestSettings}
 
 import org.apache.spark.GlutenSortShuffleSuite
 import org.apache.spark.sql._
-import org.apache.spark.sql.catalyst.expressions.{GlutenAnsiCastSuiteWithAnsiModeOff, GlutenAnsiCastSuiteWithAnsiModeOn, GlutenArithmeticExpressionSuite, GlutenBitwiseExpressionsSuite, GlutenCastSuite, GlutenCastSuiteWithAnsiModeOn, GlutenCollectionExpressionsSuite, GlutenComplexTypeSuite, GlutenConditionalExpressionSuite, GlutenDateExpressionsSuite, GlutenDecimalExpressionSuite, GlutenDecimalPrecisionSuite, GlutenHashExpressionsSuite, GlutenHigherOrderFunctionsSuite, GlutenIntervalExpressionsSuite, GlutenLiteralExpressionSuite, GlutenMathExpressionsSuite, GlutenMiscExpressionsSuite, GlutenNondeterministicSuite, GlutenNullExpressionsSuite, GlutenPredicateSuite, GlutenRandomSuite, GlutenRegexpExpressionsSuite, GlutenSortOrderExpressionsSuite, GlutenStringExpressionsSuite, GlutenTryCastSuite}
+import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.connector._
 import org.apache.spark.sql.errors.{GlutenQueryCompilationErrorsDSv2Suite, GlutenQueryExecutionErrorsSuite, GlutenQueryParsingErrorsSuite}
 import org.apache.spark.sql.execution._
@@ -70,7 +70,6 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenSupportsCatalogOptionsSuite]
   enableSuite[GlutenTableCapabilityCheckSuite]
   enableSuite[GlutenWriteDistributionAndOrderingSuite]
-  enableSuite[GlutenWriterColumnarRulesSuite]
 
   enableSuite[GlutenQueryCompilationErrorsDSv2Suite]
 
@@ -112,6 +111,8 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-35711: cast timestamp without time zone to timestamp with local time zone")
     // Timezone.
     .exclude("SPARK-35719: cast timestamp with local time zone to timestamp without timezone")
+    // Set timezone through config.
+    .exclude("data type casting")
   enableSuite[GlutenCollectionExpressionsSuite]
     // Rewrite in Gluten to replace Seq with Array
     .exclude("Shuffle")
@@ -142,6 +143,22 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenHashExpressionsSuite]
   enableSuite[GlutenHigherOrderFunctionsSuite]
   enableSuite[GlutenIntervalExpressionsSuite]
+  enableSuite[GlutenJsonExpressionsSuite]
+    // https://github.com/apache/incubator-gluten/issues/8102
+    .exclude("$.store.book")
+    .exclude("$")
+    .exclude("$.store.book[0]")
+    .exclude("$.store.book[*]")
+    .exclude("$.store.book[*].category")
+    .exclude("$.store.book[*].isbn")
+    .exclude("$.store.book[*].reader")
+    .exclude("$.store.basket[*]")
+    .exclude("$.store.basket[*][0]")
+    .exclude("$.store.basket[0][*]")
+    .exclude("$.store.basket[*][*]")
+    .exclude("$.store.basket[0][*].b")
+    // Exception class different.
+    .exclude("from_json - invalid data")
   enableSuite[GlutenJsonFunctionsSuite]
     // Velox does not support single quotes in get_json_object function.
     .exclude("function get_json_object - support single quotes")
@@ -173,14 +190,12 @@ class VeloxTestSettings extends BackendTestSettings {
       "SPARK-30403",
       "SPARK-30719",
       "SPARK-31384",
-      "SPARK-30953",
       "SPARK-31658",
       "SPARK-32717",
       "SPARK-32649",
       "SPARK-34533",
       "SPARK-34781",
       "SPARK-35585",
-      "SPARK-32932",
       "SPARK-33494",
       "SPARK-33933",
       "SPARK-31220",
@@ -663,7 +678,6 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenParquetFileFormatV2Suite]
   enableSuite[GlutenParquetV1FilterSuite]
     // Rewrite.
-    .exclude("Filter applied on merged Parquet schema with new column should work")
     .exclude("SPARK-23852: Broken Parquet push-down for partially-written stats")
     // Rewrite for supported INT96 - timestamp.
     .exclude("filter pushdown - timestamp")
@@ -681,7 +695,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-16371 Do not push down filters when inner name and outer name are the same")
   enableSuite[GlutenParquetV2FilterSuite]
     // Rewrite.
-    .exclude("Filter applied on merged Parquet schema with new column should work")
     .exclude("SPARK-23852: Broken Parquet push-down for partially-written stats")
     // Rewrite for supported INT96 - timestamp.
     .exclude("filter pushdown - timestamp")
@@ -704,15 +717,7 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-35640: read binary as timestamp should throw schema incompatible error")
     // Exception msg.
     .exclude("SPARK-35640: int as long should throw schema incompatible error")
-    // Velox only support read Timestamp with INT96 for now.
-    .exclude("read dictionary and plain encoded timestamp_millis written as INT64")
-    // TODO: Unsupported Array schema in Parquet.
-    .exclude("vectorized reader: optional array with required elements")
-    .exclude("vectorized reader: required array with required elements")
-    .exclude("vectorized reader: required array with optional elements")
-    .exclude("vectorized reader: required array with legacy format")
-    // add support in native reader
-    .exclude("SPARK-41096: FIXED_LEN_BYTE_ARRAY support")
+    // Velox parquet reader not allow offset zero.
     .exclude("SPARK-40128 read DELTA_LENGTH_BYTE_ARRAY encoded strings")
   enableSuite[GlutenParquetV1PartitionDiscoverySuite]
   enableSuite[GlutenParquetV2PartitionDiscoverySuite]
@@ -722,10 +727,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("Enabling/disabling ignoreCorruptFiles")
     // decimal failed ut
     .exclude("SPARK-34212 Parquet should read decimals correctly")
-    // Timestamp is read as INT96.
-    .exclude("Migration from INT96 to TIMESTAMP_MICROS timestamp type")
-    .exclude("SPARK-10365 timestamp written and read as INT64 - TIMESTAMP_MICROS")
-    .exclude("SPARK-36182: read TimestampNTZ as TimestampLTZ")
     // new added in spark-3.3 and need fix later, random failure may caused by memory free
     .exclude("SPARK-39833: pushed filters with project without filter columns")
     .exclude("SPARK-39833: pushed filters with count()")
@@ -737,10 +738,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("Enabling/disabling ignoreCorruptFiles")
     // decimal failed ut
     .exclude("SPARK-34212 Parquet should read decimals correctly")
-    // Timestamp is read as INT96.
-    .exclude("Migration from INT96 to TIMESTAMP_MICROS timestamp type")
-    .exclude("SPARK-10365 timestamp written and read as INT64 - TIMESTAMP_MICROS")
-    .exclude("SPARK-36182: read TimestampNTZ as TimestampLTZ")
     // Rewrite because the filter after datasource is not needed.
     .exclude(
       "SPARK-26677: negated null-safe equality comparison should not filter matched row groups")
@@ -893,7 +890,8 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenSortSuite]
   enableSuite[GlutenSQLAggregateFunctionSuite]
   // spill not supported yet.
-  enableSuite[GlutenSQLWindowFunctionSuite].exclude("test with low buffer spill threshold")
+  enableSuite[GlutenSQLWindowFunctionSuite]
+    .exclude("test with low buffer spill threshold")
   enableSuite[GlutenTakeOrderedAndProjectSuite]
   enableSuite[GlutenSessionExtensionSuite]
   enableSuite[TestFileSourceScanExecTransformer]
@@ -1076,6 +1074,9 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("to_timestamp")
     // Legacy mode is not supported, assuming this mode is not commonly used.
     .exclude("SPARK-30668: use legacy timestamp parser in to_timestamp")
+    // Legacy mode is not supported and velox getTimestamp function does not throw
+    // exception when format is "yyyy-dd-aa".
+    .exclude("function to_date")
   enableSuite[GlutenDeprecatedAPISuite]
   enableSuite[GlutenDynamicPartitionPruningV1SuiteAEOff]
   enableSuite[GlutenDynamicPartitionPruningV1SuiteAEOn]

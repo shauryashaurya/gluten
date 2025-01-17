@@ -22,42 +22,47 @@
 
 namespace local_engine
 {
-int getFileOrder(const std::string & path)
-{
-    if (path.ends_with("columns.txt"))
-        return 1;
-    if (path.ends_with("metadata_version.txt"))
-        return 2;
-    if (path.ends_with("count.txt"))
-        return 3;
-    if (path.ends_with("default_compression_codec.txt"))
-        return 4;
-    if (path.ends_with("checksums.txt"))
-        return 5;
-    if (path.ends_with("uuid.txt"))
-        return 6;
-    if (path.ends_with(".cmrk3") || path.ends_with(".cmrk2") || path.ends_with(".cmrk1") ||
-        path.ends_with(".mrk3") || path.ends_with(".mrk2") || path.ends_with(".mrk1"))
-        return 10;
-    if (path.ends_with("idx"))
-        return 20;
-    if (path.ends_with("bin"))
-        return 1000;
-    return 100;
-}
 
 bool isMetaDataFile(const std::string & path)
 {
     return !path.ends_with("bin");
 }
 
-using FileMappings = std::vector<std::pair<String, std::shared_ptr<DB::TemporaryFileOnDisk>>>;
+TemporaryWriteBufferWrapper::TemporaryWriteBufferWrapper(
+    const String & file_name_, const std::shared_ptr<DB::TemporaryDataBuffer> & data_buffer_)
+    : WriteBufferFromFileBase(data_buffer_->buffer().size(), data_buffer_->buffer().begin(), 0)
+    , file_name(file_name_)
+    , data_buffer(data_buffer_)
+{
+}
+void TemporaryWriteBufferWrapper::preFinalize()
+{
+    next();
+}
+
+void TemporaryWriteBufferWrapper::finalizeImpl()
+{
+    next();
+    data_buffer->finalizeImpl();
+}
+
+void TemporaryWriteBufferWrapper::cancelImpl() noexcept
+{
+    data_buffer->cancelImpl();
+}
+
+void TemporaryWriteBufferWrapper::nextImpl()
+{
+    data_buffer->position() = position();
+    data_buffer->next();
+    BufferBase::set(data_buffer->buffer().begin(), data_buffer->buffer().size(), data_buffer->offset());
+}
 
 void CompactObjectStorageDiskTransaction::commit()
 {
     auto metadata_tx = disk.getMetadataStorage()->createTransaction();
-    std::filesystem::path data_path = std::filesystem::path(prefix_path) / "data.bin";
-    std::filesystem::path meta_path = std::filesystem::path(prefix_path) / "meta.bin";
+    std::filesystem::path data_path = std::filesystem::path(prefix_path) / PART_DATA_FILE_NAME;
+    std::filesystem::path meta_path = std::filesystem::path(prefix_path) / PART_META_FILE_NAME;
 
     auto object_storage = disk.getObjectStorage();
     auto data_key = object_storage->generateObjectKeyForPath(data_path, std::nullopt);
@@ -77,9 +82,9 @@ void CompactObjectStorageDiskTransaction::commit()
             [&](auto & item)
             {
                 DB::DiskObjectStorageMetadata metadata(object_storage->getCommonKeyPrefix(), item.first);
-                DB::ReadBufferFromFilePRead read(item.second->getAbsolutePath());
+                auto read = item.second->read();
                 int file_size = 0;
-                while (int count = read.readBig(buffer.data(), buffer.size()))
+                while (int count = read->readBig(buffer.data(), buffer.size()))
                 {
                     file_size += count;
                     out.write(buffer.data(), count);
@@ -123,12 +128,13 @@ std::unique_ptr<DB::WriteBufferFromFileBase> CompactObjectStorageDiskTransaction
             "Don't support write file in different dirs, path {}, prefix path: {}",
             path,
             prefix_path);
-    auto tmp = std::make_shared<DB::TemporaryFileOnDisk>(tmp_data);
+    auto tmp = std::make_shared<DB::TemporaryDataBuffer>(tmp_data.get());
     files.emplace_back(path, tmp);
     auto tx = disk.getMetadataStorage()->createTransaction();
     tx->createDirectoryRecursive(std::filesystem::path(path).parent_path());
     tx->createEmptyMetadataFile(path);
     tx->commit();
-    return std::make_unique<DB::WriteBufferFromFile>(tmp->getAbsolutePath(), buf_size);
+
+    return std::make_unique<TemporaryWriteBufferWrapper>(path, tmp);
 }
 }

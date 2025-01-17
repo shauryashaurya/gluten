@@ -33,8 +33,8 @@
 #include "memory/VeloxMemoryManager.h"
 #include "shuffle/Options.h"
 #include "shuffle/ShuffleWriter.h"
+#include "utils/Exception.h"
 #include "utils/VeloxArrowUtils.h"
-#include "utils/exception.h"
 #include "velox/common/memory/Memory.h"
 
 DECLARE_int64(batch_size);
@@ -89,24 +89,13 @@ bool checkPathExists(const std::string& filepath);
 void abortIfFileNotExists(const std::string& filepath);
 
 inline std::shared_ptr<gluten::ColumnarBatch> convertBatch(std::shared_ptr<gluten::ColumnarBatch> cb) {
-  if (cb->getType() != "velox") {
-    auto vp = facebook::velox::importFromArrowAsOwner(
-        *cb->exportArrowSchema(), *cb->exportArrowArray(), gluten::defaultLeafVeloxMemoryPool().get());
-    return std::make_shared<gluten::VeloxColumnarBatch>(std::dynamic_pointer_cast<facebook::velox::RowVector>(vp));
-  } else {
-    return cb;
-  }
+  return gluten::VeloxColumnarBatch::from(gluten::defaultLeafVeloxMemoryPool().get(), cb);
 }
 
 /// Return whether the data ends with suffix.
 bool endsWith(const std::string& data, const std::string& suffix);
 
-void setCpu(uint32_t cpuindex);
-
-arrow::Status
-setLocalDirsAndDataFileFromEnv(std::string& dataFile, std::vector<std::string>& localDirs, bool& isFromEnv);
-
-void cleanupShuffleOutput(const std::string& dataFile, const std::vector<std::string>& localDirs, bool isFromEnv);
+void setCpu(uint32_t cpuIndex);
 
 class BenchmarkAllocationListener final : public gluten::AllocationListener {
  public:
@@ -124,7 +113,7 @@ class BenchmarkAllocationListener final : public gluten::AllocationListener {
 
  private:
   uint64_t usedBytes_{0L};
-  uint64_t limit_{0L};
+  const uint64_t limit_{0L};
   gluten::ResultIterator* iterator_{nullptr};
   gluten::ShuffleWriter* shuffleWriter_{nullptr};
 };

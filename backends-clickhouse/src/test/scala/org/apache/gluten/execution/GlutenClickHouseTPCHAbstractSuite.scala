@@ -16,13 +16,14 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.utils.UTSystemParameters
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.DataFrame
 import org.apache.spark.sql.delta.{ClickhouseSnapshot, DeltaLog}
+import org.apache.spark.sql.execution.datasources.v2.clickhouse.ClickHouseConfig
 
 import org.apache.commons.io.FileUtils
 import org.scalatest.time.SpanSugar.convertIntToGrainOfTime
@@ -566,8 +567,7 @@ abstract class GlutenClickHouseTPCHAbstractSuite
       .set("spark.databricks.delta.properties.defaults.checkpointInterval", "5")
       .set("spark.databricks.delta.stalenessLimit", "3600000")
       .set("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension")
-      .set("spark.gluten.sql.columnar.columnarToRow", "true")
-      .set("spark.gluten.sql.columnar.backend.ch.worker.id", "1")
+      .set(ClickHouseConfig.CLICKHOUSE_WORKER_ID, "1")
       .set(GlutenConfig.GLUTEN_LIB_PATH, UTSystemParameters.clickHouseLibPath)
       .set("spark.gluten.sql.columnar.iterator", "true")
       .set("spark.gluten.sql.columnar.hashagg.enablefinal", "true")
@@ -588,7 +588,7 @@ abstract class GlutenClickHouseTPCHAbstractSuite
       assert(CHBroadcastBuildSideCache.size() <= 10)
     }
 
-    ClickhouseSnapshot.clearAllFileStatusCache
+    ClickhouseSnapshot.clearAllFileStatusCache()
     DeltaLog.clearCache()
     super.afterAll()
     // init GlutenConfig in the next beforeAll
@@ -613,11 +613,49 @@ abstract class GlutenClickHouseTPCHAbstractSuite
       noFallBack: Boolean = true)(customCheck: DataFrame => Unit): Unit = withDataFrame(sqlStr) {
     df =>
       if (compareResult) {
-        verifyTPCHResult(df, s"q${"%02d".format(queryNum)}", queriesResults)
+        verifyTPCHResult(df, s"q$queryNum", queriesResults)
       } else {
         df.collect()
       }
       checkDataFrame(noFallBack, customCheck, df)
   }
 
+  def q1(tableName: String): String =
+    s"""
+       |SELECT
+       |    l_returnflag,
+       |    l_linestatus,
+       |    sum(l_quantity) AS sum_qty,
+       |    sum(l_extendedprice) AS sum_base_price,
+       |    sum(l_extendedprice * (1 - l_discount)) AS sum_disc_price,
+       |    sum(l_extendedprice * (1 - l_discount) * (1 + l_tax)) AS sum_charge,
+       |    avg(l_quantity) AS avg_qty,
+       |    avg(l_extendedprice) AS avg_price,
+       |    avg(l_discount) AS avg_disc,
+       |    count(*) AS count_order
+       |FROM
+       |    $tableName
+       |WHERE
+       |    l_shipdate <= date'1998-09-02' - interval 1 day
+       |GROUP BY
+       |    l_returnflag,
+       |    l_linestatus
+       |ORDER BY
+       |    l_returnflag,
+       |    l_linestatus;
+       |
+       |""".stripMargin
+
+  def q6(tableName: String): String =
+    s"""
+       |SELECT
+       |    sum(l_extendedprice * l_discount) AS revenue
+       |FROM
+       |    $tableName
+       |WHERE
+       |    l_shipdate >= date'1994-01-01'
+       |    AND l_shipdate < date'1994-01-01' + interval 1 year
+       |    AND l_discount BETWEEN 0.06 - 0.01 AND 0.06 + 0.01
+       |    AND l_quantity < 24
+       |""".stripMargin
 }

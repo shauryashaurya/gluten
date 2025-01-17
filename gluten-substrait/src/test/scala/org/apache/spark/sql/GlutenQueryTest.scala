@@ -21,6 +21,8 @@ package org.apache.spark.sql
  *   1. We need to modify the way org.apache.spark.sql.CHQueryTest#compare compares double
  */
 import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.execution.GlutenPlan
+import org.apache.gluten.execution.TransformSupport
 import org.apache.gluten.sql.shims.SparkShimLoader
 
 import org.apache.spark.SPARK_VERSION_SHORT
@@ -28,7 +30,8 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.util._
-import org.apache.spark.sql.execution.SQLExecution
+import org.apache.spark.sql.execution.{CommandResultExec, SparkPlan, SQLExecution, UnaryExecNode}
+import org.apache.spark.sql.execution.adaptive.{AdaptiveSparkPlanExec, ShuffleQueryStageExec}
 import org.apache.spark.sql.execution.columnar.InMemoryRelation
 import org.apache.spark.storage.StorageLevel
 
@@ -38,6 +41,7 @@ import org.scalatest.Assertions
 import java.util.TimeZone
 
 import scala.collection.JavaConverters._
+import scala.reflect.ClassTag
 import scala.reflect.runtime.universe
 
 abstract class GlutenQueryTest extends PlanTest {
@@ -305,6 +309,93 @@ abstract class GlutenQueryTest extends PlanTest {
     assert(
       query.queryExecution.executedPlan.missingInput.isEmpty,
       s"The physical plan has missing inputs:\n${query.queryExecution.executedPlan}")
+  }
+
+  def checkLengthAndPlan(df: DataFrame, len: Int = 100): Unit = {
+    assert(df.collect().length == len)
+    val executedPlan = getExecutedPlan(df)
+    assert(executedPlan.exists(plan => plan.find(_.isInstanceOf[TransformSupport]).isDefined))
+  }
+
+  private def getExecutedPlan(plan: SparkPlan): Seq[SparkPlan] = {
+    val subTree = plan match {
+      case exec: AdaptiveSparkPlanExec =>
+        getExecutedPlan(exec.executedPlan)
+      case cmd: CommandResultExec =>
+        getExecutedPlan(cmd.commandPhysicalPlan)
+      case s: ShuffleQueryStageExec =>
+        getExecutedPlan(s.plan)
+      case plan =>
+        plan.children.flatMap(getExecutedPlan)
+    }
+
+    if (plan.nodeName.startsWith("WholeStageCodegen")) {
+      subTree
+    } else {
+      subTree :+ plan
+    }
+  }
+
+  /**
+   * Get the executed plan of a data frame.
+   * @param df:
+   *   dataframe.
+   * @return
+   *   A sequence of executed plans.
+   */
+  def getExecutedPlan(df: DataFrame): Seq[SparkPlan] = {
+    getExecutedPlan(df.queryExecution.executedPlan)
+  }
+
+  /**
+   * Check whether the executed plan of a dataframe contains the expected plan chain.
+   *
+   * @param df
+   *   : the input dataframe.
+   * @param tag
+   *   : class of the expected plan.
+   * @param childTag
+   *   : class of the expected plan's child.
+   * @tparam T
+   *   : type of the expected plan.
+   * @tparam PT
+   *   : type of the expected plan's child.
+   */
+  def checkSparkOperatorChainMatch[T <: UnaryExecNode, PT <: UnaryExecNode](
+      df: DataFrame)(implicit tag: ClassTag[T], childTag: ClassTag[PT]): Unit = {
+    val executedPlan = getExecutedPlan(df)
+    assert(
+      executedPlan.exists(
+        plan =>
+          tag.runtimeClass.isInstance(plan)
+            && childTag.runtimeClass.isInstance(plan.children.head)),
+      s"Expect an operator chain of [${tag.runtimeClass.getSimpleName} ->"
+        + s"${childTag.runtimeClass.getSimpleName}] exists in executedPlan: \n"
+        + s"${executedPlan.last}"
+    )
+  }
+
+  /**
+   * Check whether the executed plan of a dataframe contains the expected plan.
+   * @param df:
+   *   the input dataframe.
+   * @param tag:
+   *   class of the expected plan.
+   * @tparam T:
+   *   type of the expected plan.
+   */
+  def checkGlutenOperatorMatch[T <: GlutenPlan](df: DataFrame)(implicit tag: ClassTag[T]): Unit = {
+    val executedPlan = getExecutedPlan(df)
+    assert(
+      executedPlan.exists(plan => tag.runtimeClass.isInstance(plan)),
+      s"Expect ${tag.runtimeClass.getSimpleName} exists " +
+        s"in executedPlan:\n ${executedPlan.last}"
+    )
+  }
+
+  def checkSparkOperatorMatch[T <: SparkPlan](df: DataFrame)(implicit tag: ClassTag[T]): Unit = {
+    val executedPlan = getExecutedPlan(df)
+    assert(executedPlan.exists(plan => tag.runtimeClass.isInstance(plan)))
   }
 }
 

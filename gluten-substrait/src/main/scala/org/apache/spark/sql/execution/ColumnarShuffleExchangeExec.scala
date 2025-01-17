@@ -16,16 +16,17 @@
  */
 package org.apache.spark.sql.execution
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.BackendsApiManager
-import org.apache.gluten.extension.{GlutenPlan, ValidationResult}
+import org.apache.gluten.config.GlutenConfig
+import org.apache.gluten.execution.ValidatablePlan
+import org.apache.gluten.extension.ValidationResult
+import org.apache.gluten.extension.columnar.transition.Convention
 import org.apache.gluten.sql.shims.SparkShimLoader
 
 import org.apache.spark._
 import org.apache.spark.internal.Logging
 import org.apache.spark.rdd.RDD
 import org.apache.spark.serializer.Serializer
-import org.apache.spark.shuffle.ShuffleHandle
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.Statistics
@@ -45,7 +46,7 @@ case class ColumnarShuffleExchangeExec(
     projectOutputAttributes: Seq[Attribute],
     advisoryPartitionSize: Option[Long] = None)
   extends ShuffleExchangeLike
-  with GlutenPlan {
+  with ValidatablePlan {
   private[sql] lazy val writeMetrics =
     SQLShuffleWriteMetricsReporter.createShuffleWriteMetrics(sparkContext)
 
@@ -91,22 +92,6 @@ case class ColumnarShuffleExchangeExec(
       useSortBasedShuffle)
   }
 
-  // 'shuffleDependency' is only needed when enable AQE.
-  // Columnar shuffle will use 'columnarShuffleDependency'
-  @transient
-  lazy val shuffleDependency: ShuffleDependency[Int, InternalRow, InternalRow] =
-    new ShuffleDependency[Int, InternalRow, InternalRow](
-      _rdd = new ColumnarShuffleExchangeExec.DummyPairRDDWithPartitions(
-        sparkContext,
-        inputColumnarRDD.getNumPartitions),
-      partitioner = columnarShuffleDependency.partitioner
-    ) {
-
-      override val shuffleId: Int = columnarShuffleDependency.shuffleId
-
-      override val shuffleHandle: ShuffleHandle = columnarShuffleDependency.shuffleHandle
-    }
-
   // super.stringArgs ++ Iterator(output.map(o => s"${o}#${o.dataType.simpleString}"))
   val serializer: Serializer = BackendsApiManager.getSparkPlanExecApiInstance
     .createColumnarBatchSerializer(schema, metrics, useSortBasedShuffle)
@@ -115,7 +100,7 @@ case class ColumnarShuffleExchangeExec(
 
   override protected def doValidateInternal(): ValidationResult = {
     BackendsApiManager.getValidatorApiInstance
-      .doColumnarShuffleExchangeExecValidate(outputPartitioning, child)
+      .doColumnarShuffleExchangeExecValidate(output, outputPartitioning, child)
       .map {
         reason =>
           ValidationResult.failed(
@@ -126,10 +111,9 @@ case class ColumnarShuffleExchangeExec(
 
   override def nodeName: String = "ColumnarExchange"
 
-  override def supportsColumnar: Boolean = true
-  override def numMappers: Int = shuffleDependency.rdd.getNumPartitions
+  override def numMappers: Int = inputColumnarRDD.getNumPartitions
 
-  override def numPartitions: Int = shuffleDependency.partitioner.numPartitions
+  override def numPartitions: Int = columnarShuffleDependency.partitioner.numPartitions
 
   override def runtimeStatistics: Statistics = {
     val dataSize = metrics("dataSize").value
@@ -148,6 +132,10 @@ case class ColumnarShuffleExchangeExec(
     }
     super.stringArgs ++ Iterator(s"[shuffle_writer_type=$shuffleWriterType]")
   }
+
+  override def batchType(): Convention.BatchType = BackendsApiManager.getSettings.primaryBatchType
+
+  override def rowType0(): Convention.RowType = Convention.RowType.None
 
   override def doExecute(): RDD[InternalRow] = {
     throw new UnsupportedOperationException()

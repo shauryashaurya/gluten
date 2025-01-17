@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (59)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (38)
+   VeloxColumnarToRow (38)
    +- ^ SortExecTransformer (36)
       +- ^ InputIteratorTransformer (35)
          +- ShuffleQueryStage (33), Statistics(X)
@@ -24,12 +24,12 @@ AdaptiveSparkPlan (59)
                                                             +- ^ ProjectExecTransformer (11)
                                                                +- ^ BroadcastHashJoinExecTransformer Inner BuildRight (10)
                                                                   :- ^ FilterExecTransformer (2)
-                                                                  :  +- ^ Scan parquet (1)
+                                                                  :  +- ^ ScanTransformer parquet  (1)
                                                                   +- ^ InputIteratorTransformer (9)
                                                                      +- BroadcastQueryStage (7), Statistics(X)
                                                                         +- ColumnarBroadcastExchange (6)
                                                                            +- ^ FilterExecTransformer (4)
-                                                                              +- ^ Scan parquet (3)
+                                                                              +- ^ ScanTransformer parquet  (3)
 +- == Initial Plan ==
    Sort (58)
    +- Exchange (57)
@@ -53,7 +53,7 @@ AdaptiveSparkPlan (59)
                                     +- Scan parquet (46)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [2]: [ps_partkey#X, ps_suppkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -64,7 +64,7 @@ ReadSchema: struct<ps_partkey:bigint,ps_suppkey:bigint>
 Input [2]: [ps_partkey#X, ps_suppkey#X]
 Arguments: isnotnull(ps_partkey#X)
 
-(3) Scan parquet
+(3) ScanTransformer parquet 
 Output [4]: [p_partkey#X, p_brand#X, p_type#X, p_size#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -213,7 +213,7 @@ Arguments: [supplier_cnt#X DESC NULLS LAST, p_brand#X ASC NULLS FIRST, p_type#X 
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
 Arguments: false
 
-(38) VeloxColumnarToRowExec
+(38) VeloxColumnarToRow
 Input [4]: [p_brand#X, p_type#X, p_size#X, supplier_cnt#X]
 
 (39) Scan parquet

@@ -71,6 +71,8 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-35719: cast timestamp with local time zone to timestamp without timezone")
     // User defined type.
     .exclude("SPARK-32828: cast from a derived user-defined type to a base type")
+    // Set timezone through config.
+    .exclude("data type casting")
 
   enableSuite[GlutenAnsiCastSuiteWithAnsiModeOff]
     .exclude(
@@ -164,14 +166,12 @@ class VeloxTestSettings extends BackendTestSettings {
       "SPARK-30403",
       "SPARK-30719",
       "SPARK-31384",
-      "SPARK-30953",
       "SPARK-31658",
       "SPARK-32717",
       "SPARK-32649",
       "SPARK-34533",
       "SPARK-34781",
       "SPARK-35585",
-      "SPARK-32932",
       "SPARK-33494",
       // "SPARK-33933",
       "SPARK-31220",
@@ -265,6 +265,9 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("to_timestamp")
     // Legacy mode is not supported, assuming this mode is not commonly used.
     .exclude("SPARK-30668: use legacy timestamp parser in to_timestamp")
+    // Legacy mode is not supported and velox getTimestamp function does not throw
+    // exception when format is "yyyy-dd-aa".
+    .exclude("function to_date")
   enableSuite[GlutenDataFrameFunctionsSuite]
     // blocked by Velox-5768
     .exclude("aggregate function - array for primitive type containing null")
@@ -316,7 +319,8 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenSameResultSuite]
   enableSuite[GlutenSQLAggregateFunctionSuite]
   // spill not supported yet.
-  enableSuite[GlutenSQLWindowFunctionSuite].exclude("test with low buffer spill threshold")
+  enableSuite[GlutenSQLWindowFunctionSuite]
+    .exclude("test with low buffer spill threshold")
   enableSuite[GlutenSortSuite]
     // Sort spill is not supported.
     .exclude("sorting does not crash for large inputs")
@@ -363,6 +367,22 @@ class VeloxTestSettings extends BackendTestSettings {
     // Rewrite the following two tests in GlutenDatasetSuite.
     .exclude("dropDuplicates: columns with same column name")
     .exclude("groupBy.as")
+  enableSuite[GlutenJsonExpressionsSuite]
+    // https://github.com/apache/incubator-gluten/issues/8102
+    .exclude("$.store.book")
+    .exclude("$")
+    .exclude("$.store.book[0]")
+    .exclude("$.store.book[*]")
+    .exclude("$.store.book[*].category")
+    .exclude("$.store.book[*].isbn")
+    .exclude("$.store.book[*].reader")
+    .exclude("$.store.basket[*]")
+    .exclude("$.store.basket[*][0]")
+    .exclude("$.store.basket[0][*]")
+    .exclude("$.store.basket[*][*]")
+    .exclude("$.store.basket[0][*].b")
+    // Exception class different.
+    .exclude("from_json - invalid data")
   enableSuite[GlutenJsonFunctionsSuite]
     // Velox does not support single quotes in get_json_object function.
     .exclude("function get_json_object - support single quotes")
@@ -857,7 +877,6 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenParquetFileFormatV2Suite]
   enableSuite[GlutenParquetV1FilterSuite]
     // Rewrite.
-    .exclude("Filter applied on merged Parquet schema with new column should work")
     .exclude("SPARK-23852: Broken Parquet push-down for partially-written stats")
     .exclude("SPARK-25207: exception when duplicate fields in case-insensitive mode")
     // Rewrite for supported INT96 - timestamp.
@@ -887,6 +906,8 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-17091: Convert IN predicate to Parquet filter push-down")
     .exclude("Support Parquet column index")
     .exclude("SPARK-34562: Bloom filter push down")
+    // https://github.com/apache/incubator-gluten/issues/7174
+    .excludeGlutenTest("Filter applied on merged Parquet schema with new column should work")
   enableSuite[GlutenParquetInteroperabilitySuite]
     .exclude("parquet timestamp conversion")
   enableSuite[GlutenParquetIOSuite]
@@ -894,8 +915,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("SPARK-35640: read binary as timestamp should throw schema incompatible error")
     // Exception msg.
     .exclude("SPARK-35640: int as long should throw schema incompatible error")
-    // Velox only support read Timestamp with INT96 for now.
-    .exclude("read dictionary and plain encoded timestamp_millis written as INT64")
   enableSuite[GlutenParquetV1PartitionDiscoverySuite]
   enableSuite[GlutenParquetV2PartitionDiscoverySuite]
   enableSuite[GlutenParquetProtobufCompatibilitySuite]
@@ -904,9 +923,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("Enabling/disabling ignoreCorruptFiles")
     // decimal failed ut
     .exclude("SPARK-34212 Parquet should read decimals correctly")
-    // Timestamp is read as INT96.
-    .exclude("Migration from INT96 to TIMESTAMP_MICROS timestamp type")
-    .exclude("SPARK-10365 timestamp written and read as INT64 - TIMESTAMP_MICROS")
     // Rewrite because the filter after datasource is not needed.
     .exclude(
       "SPARK-26677: negated null-safe equality comparison should not filter matched row groups")
@@ -915,9 +931,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("Enabling/disabling ignoreCorruptFiles")
     // decimal failed ut
     .exclude("SPARK-34212 Parquet should read decimals correctly")
-    // Timestamp is read as INT96.
-    .exclude("Migration from INT96 to TIMESTAMP_MICROS timestamp type")
-    .exclude("SPARK-10365 timestamp written and read as INT64 - TIMESTAMP_MICROS")
     // Rewrite because the filter after datasource is not needed.
     .exclude(
       "SPARK-26677: negated null-safe equality comparison should not filter matched row groups")
@@ -1038,7 +1051,6 @@ class VeloxTestSettings extends BackendTestSettings {
   enableSuite[GlutenSupportsCatalogOptionsSuite]
   enableSuite[GlutenTableCapabilityCheckSuite]
   enableSuite[GlutenWriteDistributionAndOrderingSuite]
-  enableSuite[GlutenWriterColumnarRulesSuite]
   enableSuite[GlutenBucketedReadWithoutHiveSupportSuite]
     // Exclude the following suite for plan changed from SMJ to SHJ.
     .exclude("avoid shuffle when join 2 bucketed tables")

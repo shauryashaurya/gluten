@@ -72,7 +72,7 @@ abstract class HashAggregateExecTransformer(
     val aggParams = new AggregationParams
     val operatorId = context.nextOperatorId(this.nodeName)
     val relNode = getAggRel(context, operatorId, aggParams, childCtx.root)
-    TransformContext(childCtx.outputAttributes, output, relNode)
+    TransformContext(output, relNode)
   }
 
   // Return whether the outputs partial aggregation should be combined for Velox computing.
@@ -119,7 +119,7 @@ abstract class HashAggregateExecTransformer(
    * @return
    *   a project rel
    */
-  def applyExtractStruct(
+  private def applyExtractStruct(
       context: SubstraitContext,
       aggRel: RelNode,
       operatorId: Long,
@@ -214,7 +214,7 @@ abstract class HashAggregateExecTransformer(
             VeloxIntermediateData.getIntermediateTypeNode(aggregateFunction)
           )
           aggregateNodeList.add(aggFunctionNode)
-        case Final =>
+        case Final | Complete =>
           val aggFunctionNode = ExpressionBuilder.makeAggregateFunction(
             VeloxAggregateFunctionsBuilder.create(args, aggregateFunction, aggregateMode),
             childrenNodeList,
@@ -242,7 +242,7 @@ abstract class HashAggregateExecTransformer(
                 aggregateFunction.inputAggBufferAttributes.head.nullable)
             )
             aggregateNodeList.add(partialNode)
-          case Final =>
+          case Final | Complete =>
             val aggFunctionNode = ExpressionBuilder.makeAggregateFunction(
               VeloxAggregateFunctionsBuilder.create(args, aggregateFunction, aggregateMode),
               childrenNodeList,
@@ -260,7 +260,7 @@ abstract class HashAggregateExecTransformer(
    * Return the output types after partial aggregation through Velox.
    * @return
    */
-  def getPartialAggOutTypes: JList[TypeNode] = {
+  private def getPartialAggOutTypes: JList[TypeNode] = {
     val typeNodeList = new JArrayList[TypeNode]()
     groupingExpressions.foreach(
       expression => {
@@ -275,7 +275,7 @@ abstract class HashAggregateExecTransformer(
             expression.mode match {
               case Partial | PartialMerge =>
                 typeNodeList.add(VeloxIntermediateData.getIntermediateTypeNode(aggregateFunction))
-              case Final =>
+              case Final | Complete =>
                 typeNodeList.add(
                   ConverterUtils
                     .getTypeNode(aggregateFunction.dataType, aggregateFunction.nullable))
@@ -356,7 +356,7 @@ abstract class HashAggregateExecTransformer(
           // The process of handling the inconsistency in column types and order between
           // Spark and Velox is exactly the opposite of applyExtractStruct.
           aggregateExpression.mode match {
-            case PartialMerge | Final =>
+            case PartialMerge | Final | Complete =>
               val newInputAttributes = new ArrayBuffer[Attribute]()
               val childNodes = new JArrayList[ExpressionNode]()
               val (sparkOrders, sparkTypes) =
@@ -419,25 +419,13 @@ abstract class HashAggregateExecTransformer(
     }
 
     // Create a project rel.
-    val emitStartIndex = originalInputAttributes.size
-    val projectRel = if (!validation) {
-      RelBuilder.makeProjectRel(inputRel, exprNodes, context, operatorId, emitStartIndex)
-    } else {
-      // Use a extension node to send the input types through Substrait plan for validation.
-      val inputTypeNodeList = originalInputAttributes
-        .map(attr => ConverterUtils.getTypeNode(attr.dataType, attr.nullable))
-        .asJava
-      val extensionNode = ExtensionBuilder.makeAdvancedExtension(
-        BackendsApiManager.getTransformerApiInstance.packPBMessage(
-          TypeBuilder.makeStruct(false, inputTypeNodeList).toProtobuf))
-      RelBuilder.makeProjectRel(
-        inputRel,
-        exprNodes,
-        extensionNode,
-        context,
-        operatorId,
-        emitStartIndex)
-    }
+    val projectRel = RelBuilder.makeProjectRel(
+      originalInputAttributes.asJava,
+      inputRel,
+      exprNodes,
+      context,
+      operatorId,
+      validation)
 
     // Create aggregation rel.
     val groupingList = new JArrayList[ExpressionNode]()
@@ -467,7 +455,7 @@ abstract class HashAggregateExecTransformer(
             // by previous projection.
             childrenNodes.add(ExpressionBuilder.makeSelection(colIdx))
             colIdx += 1
-          case Partial =>
+          case Partial | Complete =>
             aggFunc.children.foreach {
               _ =>
                 childrenNodes.add(ExpressionBuilder.makeSelection(colIdx))
@@ -600,7 +588,7 @@ abstract class HashAggregateExecTransformer(
         }
         val aggregateFunc = aggExpr.aggregateFunction
         val childrenNodes = aggExpr.mode match {
-          case Partial =>
+          case Partial | Complete =>
             aggregateFunc.children.toList.map(
               expr => {
                 ExpressionConverter
@@ -669,13 +657,13 @@ abstract class HashAggregateExecTransformer(
 object VeloxAggregateFunctionsBuilder {
 
   /**
-   * Create an scalar function for the input aggregate function.
+   * Create a scalar function for the input aggregate function.
    * @param args:
    *   the function map.
    * @param aggregateFunc:
    *   the input aggregate function.
-   * @param forMergeCompanion:
-   *   whether this is a special case to solve mixed aggregation phases.
+   * @param mode:
+   *   the mode of input aggregate function.
    * @return
    */
   def create(
@@ -784,7 +772,7 @@ case class HashAggregateExecPullOutHelper(
         expr.mode match {
           case Partial | PartialMerge =>
             expr.aggregateFunction.aggBufferAttributes
-          case Final =>
+          case Final | Complete =>
             Seq(aggregateAttributes(index))
           case other =>
             throw new GlutenNotSupportException(s"Unsupported aggregate mode: $other.")

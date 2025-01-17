@@ -15,18 +15,19 @@
  * limitations under the License.
  */
 #include <Functions/FunctionFactory.h>
-#include <Parser/MergeTreeRelParser.h>
-#include <Parser/SerializedPlanParser.h>
-#include <Parsers/ASTFunction.h>
+#include <Parser/ParserContext.h>
+#include <Parser/RelParsers/MergeTreeRelParser.h>
 #include <Processors/Executors/PipelineExecutor.h>
+#include <Processors/Executors/PullingPipelineExecutor.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
+#include <Storages/MergeTree/SparkMergeTreeMeta.h>
 #include <Storages/SubstraitSource/SubstraitFileSource.h>
 #include <google/protobuf/util/json_util.h>
 #include <google/protobuf/wrappers.pb.h>
 #include <gtest/gtest.h>
 #include <substrait/plan.pb.h>
 #include <Common/DebugUtils.h>
-#include <Common/MergeTreeTool.h>
+#include <Common/QueryContext.h>
 
 using namespace DB;
 using namespace local_engine;
@@ -34,7 +35,7 @@ using namespace local_engine;
 TEST(TestBatchParquetFileSource, blob)
 {
     GTEST_SKIP();
-    auto config = local_engine::SerializedPlanParser::config;
+    Context::ConfigurationPtr config;
     config->setString("blob.storage_account_url", "http://127.0.0.1:10000/devstoreaccount1");
     config->setString("blob.container_name", "libch");
     config->setString("blob.container_already_exists", "true");
@@ -80,7 +81,7 @@ TEST(TestBatchParquetFileSource, blob)
         columns.emplace_back(std::move(col));
     }
     auto header = Block(std::move(columns));
-    builder->init(Pipe(std::make_shared<local_engine::SubstraitFileSource>(SerializedPlanParser::global_context, header, files)));
+    builder->init(Pipe(std::make_shared<local_engine::SubstraitFileSource>(QueryContext::globalContext(), header, files)));
 
     auto pipeline = QueryPipelineBuilder::getPipeline(std::move(*builder));
     auto executor = PullingPipelineExecutor(pipeline);
@@ -102,7 +103,7 @@ TEST(TestBatchParquetFileSource, blob)
 TEST(TestBatchParquetFileSource, s3)
 {
     GTEST_SKIP();
-    auto config = local_engine::SerializedPlanParser::config;
+    Context::ConfigurationPtr config;
     config->setString("s3.endpoint", "http://localhost:9000/tpch/");
     config->setString("s3.region", "us-east-1");
     config->setString("s3.access_key_id", "admin");
@@ -144,7 +145,7 @@ TEST(TestBatchParquetFileSource, s3)
         columns.emplace_back(std::move(col));
     }
     auto header = Block(std::move(columns));
-    builder->init(Pipe(std::make_shared<SubstraitFileSource>(SerializedPlanParser::global_context, header, files)));
+    builder->init(Pipe(std::make_shared<SubstraitFileSource>(QueryContext::globalContext(), header, files)));
 
     auto pipeline = QueryPipelineBuilder::getPipeline(std::move(*builder));
     auto executor = PullingPipelineExecutor(pipeline);
@@ -211,7 +212,7 @@ TEST(TestBatchParquetFileSource, local_file)
         columns.emplace_back(std::move(col));
     }
     auto header = Block(std::move(columns));
-    builder->init(Pipe(std::make_shared<SubstraitFileSource>(SerializedPlanParser::global_context, header, files)));
+    builder->init(Pipe(std::make_shared<SubstraitFileSource>(QueryContext::globalContext(), header, files)));
 
     auto pipeline = QueryPipelineBuilder::getPipeline(std::move(*builder));
     auto executor = PullingPipelineExecutor(pipeline);
@@ -261,11 +262,11 @@ TEST(TestPrewhere, OptimizePrewhereCondition)
     }
     Block block(std::move(columns));
 
-    ContextPtr context = SerializedPlanParser::global_context;
-    SerializedPlanParser * parser = new SerializedPlanParser(context);
-    parser->parseExtensions(plan_ptr->extensions());
+    ContextPtr context = QueryContext::globalContext();
+    ParserContextPtr parser_context = ParserContext::build(context, *plan_ptr);
+    SerializedPlanParser * parser = new SerializedPlanParser(parser_context);
 
-    MergeTreeRelParser mergeTreeParser(parser, SerializedPlanParser::global_context);
+    MergeTreeRelParser mergeTreeParser(parser_context, QueryContext::globalContext());
 
     mergeTreeParser.column_sizes["l_discount"] = 0;
     mergeTreeParser.column_sizes["l_quantity"] = 1;

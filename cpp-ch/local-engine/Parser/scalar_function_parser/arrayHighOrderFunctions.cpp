@@ -22,7 +22,6 @@
 #include <Parser/FunctionParser.h>
 #include <Parser/TypeParser.h>
 #include <Parser/scalar_function_parser/lambdaFunction.h>
-#include <Poco/Logger.h>
 #include <Common/BlockTypeUtils.h>
 #include <Common/CHUtil.h>
 #include <Common/Exception.h>
@@ -30,17 +29,20 @@
 
 namespace DB::ErrorCodes
 {
-    extern const int LOGICAL_ERROR;
+    extern const int SIZES_OF_COLUMNS_DOESNT_MATCH;
+    extern const int BAD_ARGUMENTS;
 }
 
 namespace local_engine
 {
-class ArrayFilter : public FunctionParser
+using namespace DB;
+
+class FunctionParserArrayFilter : public FunctionParser
 {
 public:
     static constexpr auto name = "filter";
-    explicit ArrayFilter(SerializedPlanParser * plan_parser_) : FunctionParser(plan_parser_) {}
-    ~ArrayFilter() override = default;
+    explicit FunctionParserArrayFilter(ParserContextPtr parser_context_) : FunctionParser(parser_context_) {}
+    ~FunctionParserArrayFilter() override = default;
 
     String getName() const override { return name; }
 
@@ -55,7 +57,7 @@ public:
         auto ch_func_name = getCHFunctionName(substrait_func);
         auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 2);
-        if (collectLambdaArguments(*plan_parser, substrait_func.arguments()[1].value().scalar_function()).size() == 1)
+        if (collectLambdaArguments(parser_context, substrait_func.arguments()[1].value().scalar_function()).size() == 1)
             return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], parsed_args[0]});
 
         /// filter with index argument.
@@ -69,14 +71,14 @@ public:
         return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], parsed_args[0], index_array_node});
     }
 };
-static FunctionParserRegister<ArrayFilter> register_array_filter;
+static FunctionParserRegister<FunctionParserArrayFilter> register_array_filter;
 
-class ArrayTransform : public FunctionParser
+class FunctionParserArrayTransform : public FunctionParser
 {
 public:
     static constexpr auto name = "transform";
-    explicit ArrayTransform(SerializedPlanParser * plan_parser_) : FunctionParser(plan_parser_) {}
-    ~ArrayTransform() override = default;
+    explicit FunctionParserArrayTransform(ParserContextPtr parser_context_) : FunctionParser(parser_context_) {}
+    ~FunctionParserArrayTransform() override = default;
     String getName() const override { return name; }
     String getCHFunctionName(const substrait::Expression_ScalarFunction & scalar_function) const override
     {
@@ -87,7 +89,7 @@ public:
     parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
     {
         auto ch_func_name = getCHFunctionName(substrait_func);
-        auto lambda_args = collectLambdaArguments(*plan_parser, substrait_func.arguments()[1].value().scalar_function());
+        auto lambda_args = collectLambdaArguments(parser_context, substrait_func.arguments()[1].value().scalar_function());
         auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 2);
         if (lambda_args.size() == 1)
@@ -115,14 +117,14 @@ public:
         return toFunctionNode(actions_dag, ch_func_name, {parsed_args[1], parsed_args[0], index_array_node});
     }
 };
-static FunctionParserRegister<ArrayTransform> register_array_map;
+static FunctionParserRegister<FunctionParserArrayTransform> register_array_map;
 
-class ArrayAggregate : public FunctionParser
+class FunctionParserArrayAggregate : public FunctionParser
 {
 public:
     static constexpr auto name = "aggregate";
-    explicit ArrayAggregate(SerializedPlanParser * plan_parser_) : FunctionParser(plan_parser_) {}
-    ~ArrayAggregate() override = default;
+    explicit FunctionParserArrayAggregate(ParserContextPtr parser_context_) : FunctionParser(parser_context_) {}
+    ~FunctionParserArrayAggregate() override = default;
     String getName() const override { return name; }
     String getCHFunctionName(const substrait::Expression_ScalarFunction & scalar_function) const override
     {
@@ -134,9 +136,11 @@ public:
         auto ch_func_name = getCHFunctionName(substrait_func);
         auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
         assert(parsed_args.size() == 3);
+
         const auto * function_type = typeid_cast<const DataTypeFunction *>(parsed_args[2]->result_type.get());
         if (!function_type)
-            throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "The third argument of aggregate function must be a lambda function");
+            throw DB::Exception(DB::ErrorCodes::BAD_ARGUMENTS, "The third argument of aggregate function must be a lambda function");
+
         if (!parsed_args[1]->result_type->equals(*(function_type->getReturnType())))
         {
             parsed_args[1] = ActionsDAGUtil::convertNodeType(
@@ -160,14 +164,14 @@ public:
         return toFunctionNode(actions_dag, "if", {is_null_node, null_node, func_node});
     }
 };
-static FunctionParserRegister<ArrayAggregate> register_array_aggregate;
+static FunctionParserRegister<FunctionParserArrayAggregate> register_array_aggregate;
 
-class ArraySort : public FunctionParser
+class FunctionParserArraySort : public FunctionParser
 {
 public:
     static constexpr auto name = "array_sort";
-    explicit ArraySort(SerializedPlanParser * plan_parser_) : FunctionParser(plan_parser_) {}
-    ~ArraySort() override = default;
+    explicit FunctionParserArraySort(ParserContextPtr parser_context_) : FunctionParser(parser_context_) {}
+    ~FunctionParserArraySort() override = default;
     String getName() const override { return name; }
     String getCHFunctionName(const substrait::Expression_ScalarFunction & scalar_function) const override
     {
@@ -180,7 +184,8 @@ public:
         auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
 
         if (parsed_args.size() != 2)
-            throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "array_sort function must have two arguments");
+            throw DB::Exception(DB::ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH, "array_sort function must have two arguments");
+
         if (isDefaultCompare(substrait_func.arguments()[1].value().scalar_function()))
         {
             return toFunctionNode(actions_dag, ch_func_name, {parsed_args[0]});
@@ -194,7 +199,7 @@ private:
     bool isDefaultCompare(const substrait::Expression_ScalarFunction & scalar_function) const
     {
         String left_variable_name, right_variable_name;
-        auto names_types = collectLambdaArguments(*plan_parser, scalar_function);
+        auto names_types = collectLambdaArguments(parser_context, scalar_function);
         {
             auto it = names_types.begin();
             left_variable_name = it->name;
@@ -204,7 +209,7 @@ private:
 
         auto is_function = [&](const substrait::Expression & expr, const String & function_name) {
             return expr.has_scalar_function()
-                && *(plan_parser->getFunctionSignatureName(expr.scalar_function().function_reference())) == function_name;
+                && expression_parser->getFunctionNameInSignature(expr.scalar_function().function_reference()) == function_name;
         };
 
         auto is_variable = [&](const substrait::Expression & expr, const String & var) {
@@ -215,14 +220,14 @@ private:
             const auto var_expr = expr.scalar_function().arguments()[0].value();
             if (!var_expr.has_literal())
                 return false;
-            auto [_, name] = plan_parser->parseLiteral(var_expr.literal());
+            auto [_, name] = LiteralParser::parse(var_expr.literal());
             return var == name.safeGet<String>();
         };
 
         auto is_int_value = [&](const substrait::Expression & expr, Int32 val) {
             if (!expr.has_literal())
                 return false;
-            auto [_, x] = plan_parser->parseLiteral(expr.literal());
+            auto [_, x] = LiteralParser::parse(expr.literal());
             return val == x.safeGet<Int32>();
         };
 
@@ -304,6 +309,34 @@ private:
         return is_if_both_null_else(lambda_body);
     }
 };
-static FunctionParserRegister<ArraySort> register_array_sort;
+static FunctionParserRegister<FunctionParserArraySort> register_array_sort;
+
+class FunctionParserZipWith: public FunctionParser
+{
+public:
+    static constexpr auto name = "zip_with";
+    explicit FunctionParserZipWith(ParserContextPtr parser_context_) : FunctionParser(parser_context_) {}
+    ~FunctionParserZipWith() override = default;
+    String getName() const override { return name; }
+
+    const DB::ActionsDAG::Node *
+    parse(const substrait::Expression_ScalarFunction & substrait_func, DB::ActionsDAG & actions_dag) const override
+    {
+        /// Parse spark zip_with(arr1, arr2, func) as CH arrayMap(func, arrayZipUnaligned(arr1, arr2))
+        auto parsed_args = parseFunctionArguments(substrait_func, actions_dag);
+        if (parsed_args.size() != 3)
+            throw DB::Exception(DB::ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH, "zip_with function must have three arguments");
+
+        auto lambda_args = collectLambdaArguments(parser_context, substrait_func.arguments()[2].value().scalar_function());
+        if (lambda_args.size() != 2)
+            throw DB::Exception(DB::ErrorCodes::SIZES_OF_COLUMNS_DOESNT_MATCH, "The lambda function in zip_with must have two arguments");
+
+        const auto * array_zip_unaligned = toFunctionNode(actions_dag, "arrayZipUnaligned", {parsed_args[0], parsed_args[1]});
+        const auto * array_map = toFunctionNode(actions_dag, "arrayMap", {parsed_args[2], array_zip_unaligned});
+        return convertNodeTypeIfNeeded(substrait_func, array_map, actions_dag);
+    }
+};
+static FunctionParserRegister<FunctionParserZipWith> register_zip_with;
+
 
 }

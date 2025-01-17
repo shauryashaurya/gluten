@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (55)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (38)
+   VeloxColumnarToRow (38)
    +- ^ SortExecTransformer (36)
       +- ^ InputIteratorTransformer (35)
          +- ShuffleQueryStage (33), Statistics(X)
@@ -21,15 +21,15 @@ AdaptiveSparkPlan (55)
                                              :     +- ColumnarExchange (6)
                                              :        +- VeloxResizeBatches (5)
                                              :           +- ^ ProjectExecTransformer (3)
-                                             :              +- ^ NoopFilter (2)
-                                             :                 +- ^ Scan parquet (1)
+                                             :              +- ^ FilterExecTransformer (2)
+                                             :                 +- ^ ScanTransformer parquet  (1)
                                              +- ^ InputIteratorTransformer (18)
                                                 +- ShuffleQueryStage (16), Statistics(X)
                                                    +- ColumnarExchange (15)
                                                       +- VeloxResizeBatches (14)
                                                          +- ^ ProjectExecTransformer (12)
-                                                            +- ^ NoopFilter (11)
-                                                               +- ^ Scan parquet (10)
+                                                            +- ^ FilterExecTransformer (11)
+                                                               +- ^ ScanTransformer parquet  (10)
 +- == Initial Plan ==
    Sort (54)
    +- Exchange (53)
@@ -49,16 +49,16 @@ AdaptiveSparkPlan (55)
                                  +- Scan parquet (43)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [2]: [o_orderkey#X, o_orderpriority#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(o_orderkey)]
 ReadSchema: struct<o_orderkey:bigint,o_orderpriority:string>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [2]: [o_orderkey#X, o_orderpriority#X]
-Arguments: [o_orderkey#X, o_orderpriority#X]
+Arguments: isnotnull(o_orderkey#X)
 
 (3) ProjectExecTransformer
 Output [3]: [hash(o_orderkey#X, 42) AS hash_partition_key#X, o_orderkey#X, o_orderpriority#X]
@@ -86,16 +86,16 @@ Input [2]: [o_orderkey#X, o_orderpriority#X]
 (9) InputIteratorTransformer
 Input [2]: [o_orderkey#X, o_orderpriority#X]
 
-(10) Scan parquet
+(10) ScanTransformer parquet 
 Output [5]: [l_orderkey#X, l_shipdate#X, l_commitdate#X, l_receiptdate#X, l_shipmode#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_commitdate), IsNotNull(l_receiptdate), IsNotNull(l_shipdate), In(l_shipmode, [MAIL,SHIP]), GreaterThanOrEqual(l_receiptdate,1994-01-01), LessThan(l_receiptdate,1995-01-01), IsNotNull(l_orderkey)]
 ReadSchema: struct<l_orderkey:bigint,l_shipdate:date,l_commitdate:date,l_receiptdate:date,l_shipmode:string>
 
-(11) NoopFilter
+(11) FilterExecTransformer
 Input [5]: [l_orderkey#X, l_shipdate#X, l_commitdate#X, l_receiptdate#X, l_shipmode#X]
-Arguments: [l_orderkey#X, l_shipdate#X, l_commitdate#X, l_receiptdate#X, l_shipmode#X]
+Arguments: ((((((((isnotnull(l_commitdate#X) AND isnotnull(l_receiptdate#X)) AND isnotnull(l_shipdate#X)) AND l_shipmode#X IN (MAIL,SHIP)) AND (l_commitdate#X < l_receiptdate#X)) AND (l_shipdate#X < l_commitdate#X)) AND (l_receiptdate#X >= 1994-01-01)) AND (l_receiptdate#X < 1995-01-01)) AND isnotnull(l_orderkey#X))
 
 (12) ProjectExecTransformer
 Output [3]: [hash(l_orderkey#X, 42) AS hash_partition_key#X, l_orderkey#X, l_shipmode#X]
@@ -130,11 +130,11 @@ Join type: Inner
 Join condition: None
 
 (20) ProjectExecTransformer
-Output [4]: [o_orderpriority#X, l_shipmode#X, CASE WHEN ((o_orderpriority#X = 1-URGENT) OR (o_orderpriority#X = 2-HIGH)) THEN 1 ELSE 0 END AS _pre_X#X, CASE WHEN (NOT (o_orderpriority#X = 1-URGENT) AND NOT (o_orderpriority#X = 2-HIGH)) THEN 1 ELSE 0 END AS _pre_X#X]
+Output [3]: [l_shipmode#X, CASE WHEN ((o_orderpriority#X = 1-URGENT) OR (o_orderpriority#X = 2-HIGH)) THEN 1 ELSE 0 END AS _pre_X#X, CASE WHEN (NOT (o_orderpriority#X = 1-URGENT) AND NOT (o_orderpriority#X = 2-HIGH)) THEN 1 ELSE 0 END AS _pre_X#X]
 Input [4]: [o_orderkey#X, o_orderpriority#X, l_orderkey#X, l_shipmode#X]
 
 (21) FlushableHashAggregateExecTransformer
-Input [4]: [o_orderpriority#X, l_shipmode#X, _pre_X#X, _pre_X#X]
+Input [3]: [l_shipmode#X, _pre_X#X, _pre_X#X]
 Keys [1]: [l_shipmode#X]
 Functions [2]: [partial_sum(_pre_X#X), partial_sum(_pre_X#X)]
 Aggregate Attributes [2]: [sum#X, sum#X]
@@ -203,7 +203,7 @@ Arguments: [l_shipmode#X ASC NULLS FIRST], true, 0
 Input [3]: [l_shipmode#X, high_line_count#X, low_line_count#X]
 Arguments: false
 
-(38) VeloxColumnarToRowExec
+(38) VeloxColumnarToRow
 Input [3]: [l_shipmode#X, high_line_count#X, low_line_count#X]
 
 (39) Scan parquet

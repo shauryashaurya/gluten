@@ -14,15 +14,27 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#include <Functions/SparkFunctionDecimalDivide.h>
+#include "SparkFunctionDecimalBinaryArithmetic.h"
+#include "SparkFunctionDecimalBinaryOperator.h"
 
 namespace local_engine
 {
-
-REGISTER_FUNCTION(SparkFunctionDecimalDivide)
+struct NameSparkDecimalDivide
 {
-    factory.registerFunction<SparkFunctionDecimalDivide<DivideDecimalsImpl>>();
+    static constexpr auto name = "sparkDecimalDivide";
+};
+struct NameSparkDecimalDivideEffect
+{
+    static constexpr auto name = "sparkDecimalDivideEffect";
+};
+
+using DecimalDivide = SparkFunctionDecimalBinaryArithmetic<DecimalDivideImpl, NameSparkDecimalDivide>;
+using DecimalDivideEffect = SparkFunctionDecimalBinaryArithmetic<DecimalDivideImpl, NameSparkDecimalDivideEffect, OpMode::Effect>;
+
+REGISTER_FUNCTION(SparkDecimalFunctionDivide)
+{
+    factory.registerFunction<DecimalDivide>();
+    factory.registerFunction<DecimalDivideEffect>();
 }
 
 }

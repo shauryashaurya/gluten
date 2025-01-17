@@ -16,9 +16,12 @@
  */
 package org.apache.gluten
 
+import org.apache.gluten.backendsapi.clickhouse.RuntimeConfig
 import org.apache.gluten.benchmarks.GenTPCHTableScripts
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.sql.SparkSession
+import org.apache.spark.sql.execution.datasources.v2.clickhouse.ClickHouseConfig
 
 import org.apache.commons.io.FileUtils
 
@@ -34,10 +37,10 @@ object RunTPCHTest {
     // parquet or mergetree
     val fileFormat = "parquet"
     val libPath = "/usr/local/clickhouse/lib/libch.so"
-    if (!(new File(libPath)).exists()) System.exit(1)
+    if (!new File(libPath).exists()) System.exit(1)
     // TPCH data files path
     val dataFilesPath = "/data/tpch-data/" + fileFormat
-    if (!(new File(dataFilesPath)).exists()) System.exit(1)
+    if (!new File(dataFilesPath).exists()) System.exit(1)
     // the time of execution
     val executedCnt = 5
     // local thread count
@@ -63,7 +66,7 @@ object RunTPCHTest {
     FileUtils.forceMkdir(new File(warehouse))
     FileUtils.forceMkdir(new File(metaStorePathAbsolute))
 
-    val resourcePath = rootPath + "../../../../gluten-core/src/test/resources/"
+    val resourcePath = rootPath + "../../../../tools/gluten-it/common/src/main/resources/"
     val queryPath = resourcePath + "/tpch-queries/"
     // which sql to execute
     val sqlFilePath = queryPath + "q01.sql"
@@ -90,8 +93,7 @@ object RunTPCHTest {
       .config("spark.databricks.delta.snapshotPartitions", 1)
       .config("spark.databricks.delta.properties.defaults.checkpointInterval", 5)
       .config("spark.databricks.delta.stalenessLimit", 3600 * 1000)
-      .config("spark.gluten.sql.columnar.columnarToRow", columnarColumnToRow)
-      .config("spark.gluten.sql.columnar.backend.ch.worker.id", "1")
+      .config(ClickHouseConfig.CLICKHOUSE_WORKER_ID, "1")
       .config(GlutenConfig.GLUTEN_LIB_PATH, libPath)
       .config("spark.gluten.sql.columnar.iterator", "true")
       .config("spark.gluten.sql.columnar.hashagg.enablefinal", "true")
@@ -99,7 +101,7 @@ object RunTPCHTest {
       .config("spark.sql.columnVector.offheap.enabled", "true")
       .config("spark.memory.offHeap.enabled", "true")
       .config("spark.memory.offHeap.size", offHeapSize)
-      .config("spark.gluten.sql.columnar.backend.ch.runtime_config.logger.level", "error")
+      .config(RuntimeConfig.LOGGER_LEVEL.key, "error")
       .config("spark.sql.warehouse.dir", warehouse)
       .config(
         "javax.jdo.option.ConnectionURL",

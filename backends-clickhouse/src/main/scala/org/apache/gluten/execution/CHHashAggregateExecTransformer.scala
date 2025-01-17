@@ -30,7 +30,9 @@ import org.apache.gluten.substrait.rel.{RelBuilder, RelNode}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
 import org.apache.spark.sql.execution._
+import org.apache.spark.sql.execution.adaptive._
 import org.apache.spark.sql.execution.aggregate.BaseAggregateExec
+import org.apache.spark.sql.execution.exchange._
 import org.apache.spark.sql.types._
 
 import com.google.protobuf.{Any, StringValue}
@@ -41,6 +43,45 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ListBuffer
 
 object CHHashAggregateExecTransformer {
+  // The result attributes of aggregate expressions from vanilla may be different from CH native.
+  // For example, the result attributes of `avg(x)` are `sum(x)` and `count(x)`. This could bring
+  // some unexpected issues. So we need to make the result attributes consistent with CH native.
+  def getCHAggregateResultExpressions(
+      groupingExpressions: Seq[NamedExpression],
+      aggregateExpressions: Seq[AggregateExpression],
+      resultExpressions: Seq[NamedExpression]): Seq[NamedExpression] = {
+    var adjustedResultExpressions = resultExpressions.slice(0, groupingExpressions.length)
+    var resultExpressionIndex = groupingExpressions.length
+    adjustedResultExpressions ++ aggregateExpressions.flatMap {
+      aggExpr =>
+        aggExpr.mode match {
+          case Partial | PartialMerge =>
+            // For partial aggregate, the size of the result expressions of an aggregate expression
+            // is the same as aggBufferAttributes' length
+            val aggBufferAttributesCount = aggExpr.aggregateFunction.aggBufferAttributes.length
+            aggExpr.aggregateFunction match {
+              case avg: Average =>
+                val res = Seq(aggExpr.resultAttribute)
+                resultExpressionIndex += aggBufferAttributesCount
+                res
+              case sum: Sum if (sum.dataType.isInstanceOf[DecimalType]) =>
+                val res = Seq(resultExpressions(resultExpressionIndex))
+                resultExpressionIndex += aggBufferAttributesCount
+                res
+              case _ =>
+                val res = resultExpressions
+                  .slice(resultExpressionIndex, resultExpressionIndex + aggBufferAttributesCount)
+                resultExpressionIndex += aggBufferAttributesCount
+                res
+            }
+          case _ =>
+            val res = Seq(resultExpressions(resultExpressionIndex))
+            resultExpressionIndex += 1
+            res
+        }
+    }
+  }
+
   def getAggregateResultAttributes(
       groupingExpressions: Seq[NamedExpression],
       aggregateExpressions: Seq[AggregateExpression]): Seq[Attribute] = {
@@ -53,6 +94,19 @@ object CHHashAggregateExecTransformer {
   def newStructFieldId(): Long = curId.getAndIncrement()
 }
 
+/**
+ * About aggregate modes. In general, all the modes of aggregate expressions in the same
+ * HashAggregateExec are the same. And the aggregation will be divided into two stages, partial
+ * aggregate and final merge aggregated. But there are some exceptions.
+ *   - f(distinct x). This will be divided into four stages (without stages merged by
+ *     `MergeTwoPhasesHashBaseAggregate`). The first two stages use `x` as a grouping key and
+ *     without aggregate functions. The last two stages aggregate without `x` as a grouping key and
+ *     with aggregate function `f`.
+ *   - f1(distinct x), f(2). This will be divided into four stages. The first two stages use `x` as
+ *     a grouping key and with partial aggregate function `f2`. The last two stages aggregate
+ *     without `x` as a grouping key and with aggregate function `f1` and `f2`. The 3rd stages hase
+ *     different modes at the same time. `f2` is partial merge but `f1` is partial.
+ */
 case class CHHashAggregateExecTransformer(
     requiredChildDistributionExpressions: Option[Seq[Expression]],
     groupingExpressions: Seq[NamedExpression],
@@ -80,6 +134,14 @@ case class CHHashAggregateExecTransformer(
       case _: StructType => true
       case other => super.checkType(other)
     }
+  }
+
+  // CH does not support duplicate columns in a block. So there should not be duplicate attributes
+  // in child's output.
+  // There is an exception case, when a shuffle result is reused, the child's output may contain
+  // duplicate columns. It's mismatched with the the real output of CH.
+  protected lazy val childOutput: Seq[Attribute] = {
+    child.output
   }
 
   override protected def doTransform(context: SubstraitContext): TransformContext = {
@@ -114,12 +176,12 @@ case class CHHashAggregateExecTransformer(
         if (modes.isEmpty || modes.forall(_ == Complete)) {
           // When there is no aggregate function or there is complete mode, it does not need
           // to handle outputs according to the AggregateMode
-          for (attr <- child.output) {
+          for (attr <- childOutput) {
             typeList.add(ConverterUtils.getTypeNode(attr.dataType, attr.nullable))
             nameList.add(ConverterUtils.genColumnNameWithExprId(attr))
             nameList.addAll(ConverterUtils.collectStructFieldNames(attr.dataType))
           }
-          (child.output, output)
+          (childOutput, output)
         } else if (!modes.contains(Partial)) {
           // non-partial mode
           var resultAttrIndex = 0
@@ -139,13 +201,13 @@ case class CHHashAggregateExecTransformer(
           (aggregateResultAttributes, output)
         } else {
           // partial mode
-          for (attr <- child.output) {
+          for (attr <- childOutput) {
             typeList.add(ConverterUtils.getTypeNode(attr.dataType, attr.nullable))
             nameList.add(ConverterUtils.genColumnNameWithExprId(attr))
             nameList.addAll(ConverterUtils.collectStructFieldNames(attr.dataType))
           }
 
-          (child.output, aggregateResultAttributes)
+          (childOutput, aggregateResultAttributes)
         }
       }
 
@@ -155,7 +217,7 @@ case class CHHashAggregateExecTransformer(
         RelBuilder.makeReadRelForInputIteratorWithoutRegister(typeList, nameList, context)
       (getAggRel(context, operatorId, aggParams, readRel), inputAttrs, outputAttrs)
     }
-    TransformContext(inputAttributes, outputAttributes, relNode)
+    TransformContext(outputAttributes, relNode)
   }
 
   override def getAggRel(
@@ -184,7 +246,7 @@ case class CHHashAggregateExecTransformer(
         // Use 'child.output' as based Seq[Attribute], the originalInputAttributes
         // may be different for each backend.
         val exprNode = ExpressionConverter
-          .replaceWithExpressionTransformer(expr, child.output)
+          .replaceWithExpressionTransformer(expr, childOutput)
           .doTransform(args)
         groupingList.add(exprNode)
       })
@@ -204,7 +266,7 @@ case class CHHashAggregateExecTransformer(
       aggExpr => {
         if (aggExpr.filter.isDefined) {
           val exprNode = ExpressionConverter
-            .replaceWithExpressionTransformer(aggExpr.filter.get, child.output)
+            .replaceWithExpressionTransformer(aggExpr.filter.get, childOutput)
             .doTransform(args)
           aggFilterList.add(exprNode)
         } else {
@@ -218,7 +280,7 @@ case class CHHashAggregateExecTransformer(
             aggregateFunc.children.toList.map(
               expr => {
                 ExpressionConverter
-                  .replaceWithExpressionTransformer(expr, child.output)
+                  .replaceWithExpressionTransformer(expr, childOutput)
                   .doTransform(args)
               })
           case PartialMerge if distinct_modes.contains(Partial) =>
@@ -375,6 +437,15 @@ case class CHHashAggregateExecTransformer(
                 approxPercentile.percentageExpression.dataType,
                 approxPercentile.percentageExpression.nullable)
               (makeStructType(fields), attr.nullable)
+            case percentile: Percentile =>
+              var fields = Seq[(DataType, Boolean)]()
+              // Use percentile.nullable as the nullable of the struct type
+              // to make sure it returns null when input is empty
+              fields = fields :+ (percentile.child.dataType, percentile.nullable)
+              fields = fields :+ (
+                percentile.percentageExpression.dataType,
+                percentile.percentageExpression.nullable)
+              (makeStructType(fields), attr.nullable)
             case _ =>
               (makeStructTypeSingleOne(attr.dataType, attr.nullable), attr.nullable)
           }
@@ -402,13 +473,59 @@ case class CHHashAggregateExecTransformer(
     } else {
       null
     }
-    val optimizationContent = s"has_required_child_distribution_expressions=" +
-      s"${requiredChildDistributionExpressions.isDefined}\n"
+    val parametersStrBuf = new StringBuffer("AggregateParams:")
+    parametersStrBuf
+      .append(s"hasPrePartialAggregate=$hasPrePartialAggregate")
+      .append("\n")
+      .append(s"hasRequiredChildDistributionExpressions=" +
+        s"${requiredChildDistributionExpressions.isDefined}")
+      .append("\n")
     val optimization =
       BackendsApiManager.getTransformerApiInstance.packPBMessage(
-        StringValue.newBuilder.setValue(optimizationContent).build)
+        StringValue.newBuilder.setValue(parametersStrBuf.toString).build)
     ExtensionBuilder.makeAdvancedExtension(optimization, enhancement)
+  }
 
+  // Check that there is a partial aggregation ahead this HashAggregateExec.
+  // This is useful when aggregate expressions are empty.
+  private def hasPrePartialAggregate(): Boolean = {
+    def isSameAggregation(agg1: BaseAggregateExec, agg2: BaseAggregateExec): Boolean = {
+      val res = agg1.groupingExpressions.length == agg2.groupingExpressions.length &&
+        agg1.groupingExpressions.zip(agg2.groupingExpressions).forall {
+          case (e1, e2) =>
+            e1.toAttribute == e2.toAttribute
+        }
+      res
+    }
+
+    def checkChild(exec: SparkPlan): Boolean = {
+      exec match {
+        case agg: BaseAggregateExec =>
+          isSameAggregation(this, agg)
+        case shuffle: ShuffleExchangeLike =>
+          checkChild(shuffle.child)
+        case iter: InputIteratorTransformer =>
+          checkChild(iter.child)
+        case inputAdapter: ColumnarInputAdapter =>
+          checkChild(inputAdapter.child)
+        case wholeStage: WholeStageTransformer =>
+          checkChild(wholeStage.child)
+        case aqeShuffleRead: AQEShuffleReadExec =>
+          checkChild(aqeShuffleRead.child)
+        case shuffle: ShuffleQueryStageExec =>
+          checkChild(shuffle.plan)
+        case _ =>
+          false
+      }
+    }
+
+    // It's more complex when the aggregate expressions are empty. We need to iterate the plan
+    // to find whether there is a partial aggregation. `count(distinct x)` is one of these cases.
+    if (aggregateExpressions.length > 0) {
+      modes.exists(mode => mode == PartialMerge || mode == Final)
+    } else {
+      checkChild(child)
+    }
   }
 }
 

@@ -16,34 +16,22 @@
  */
 package org.apache.gluten.backendsapi
 
-import java.util.ServiceLoader
-
-import scala.collection.JavaConverters
+import org.apache.gluten.component.Component
 
 object BackendsApiManager {
+  private lazy val backend: SubstraitBackend = initializeInternal()
 
-  private lazy val backend: Backend = initializeInternal()
-
-  /** Initialize all backends api. */
-  private def initializeInternal(): Backend = {
-    val discoveredBackends =
-      JavaConverters.iterableAsScalaIterable(ServiceLoader.load(classOf[Backend])).toSeq
-    if (discoveredBackends.isEmpty) {
-      throw new IllegalStateException("Backend implementation not discovered from JVM classpath")
-    }
-    if (discoveredBackends.size != 1) {
-      throw new IllegalStateException(
-        s"More than one Backend implementation discovered from JVM classpath: " +
-          s"${discoveredBackends.map(_.name()).toList}")
-    }
-    val backend = discoveredBackends.head
-    backend
+  /** Initialize all backends apis. */
+  private def initializeInternal(): SubstraitBackend = {
+    val loadedSubstraitBackends = Component.sorted().filter(_.isInstanceOf[SubstraitBackend])
+    assert(
+      loadedSubstraitBackends.size == 1,
+      s"Zero or more than one Substrait backends are loaded: " +
+        s"${loadedSubstraitBackends.map(_.name()).mkString(", ")}")
+    loadedSubstraitBackends.head.asInstanceOf[SubstraitBackend]
   }
 
-  /**
-   * Automatically detect the backend api.
-   * @return
-   */
+  /** Automatically detect the backend api. */
   def initialize(): String = {
     getBackendName
   }
@@ -53,10 +41,6 @@ object BackendsApiManager {
   // (e.g. gluten-substrait, gluten-data)
   def getBackendName: String = {
     backend.name()
-  }
-
-  def getBuildInfo: BackendBuildInfo = {
-    backend.buildInfo()
   }
 
   def getListenerApiInstance: ListenerApi = {

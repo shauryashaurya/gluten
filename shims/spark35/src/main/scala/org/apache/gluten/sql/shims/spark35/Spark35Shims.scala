@@ -31,6 +31,7 @@ import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.aggregate._
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{ClusteredDistribution, Distribution, KeyGroupedPartitioning, Partitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -54,7 +55,8 @@ import org.apache.spark.sql.types.{IntegerType, LongType, StructField, StructTyp
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.storage.{BlockId, BlockManagerId}
 
-import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileStatus, LocatedFileStatus, Path}
 import org.apache.parquet.schema.MessageType
 
 import java.time.ZoneOffset
@@ -81,7 +83,9 @@ class Spark35Shims extends SparkShims {
       Sig[Mask](ExpressionNames.MASK),
       Sig[TimestampAdd](ExpressionNames.TIMESTAMP_ADD),
       Sig[RoundFloor](ExpressionNames.FLOOR),
-      Sig[RoundCeil](ExpressionNames.CEIL)
+      Sig[RoundCeil](ExpressionNames.CEIL),
+      Sig[ArrayInsert](ExpressionNames.ARRAY_INSERT),
+      Sig[CheckOverflowInTableInsert](ExpressionNames.CHECK_OVERFLOW_IN_TABLE_INSERT)
     )
   }
 
@@ -516,5 +520,41 @@ class Spark35Shims extends SparkShims {
       caseSensitive.getOrElse(conf.caseSensitiveAnalysis),
       RebaseSpec(LegacyBehaviorPolicy.CORRECTED)
     )
+  }
+
+  override def extractExpressionArrayInsert(arrayInsert: Expression): Seq[Expression] = {
+    val expr = arrayInsert.asInstanceOf[ArrayInsert]
+    Seq(expr.srcArrayExpr, expr.posExpr, expr.itemExpr, Literal(expr.legacyNegativeIndex))
+  }
+
+  override def withOperatorIdMap[T](idMap: java.util.Map[QueryPlan[_], Int])(body: => T): T = {
+    val prevIdMap = QueryPlan.localIdMap.get()
+    try {
+      QueryPlan.localIdMap.set(idMap)
+      body
+    } finally {
+      QueryPlan.localIdMap.set(prevIdMap)
+    }
+  }
+
+  override def getOperatorId(plan: QueryPlan[_]): Option[Int] = {
+    Option(QueryPlan.localIdMap.get().get(plan))
+  }
+
+  override def setOperatorId(plan: QueryPlan[_], opId: Int): Unit = {
+    val map = QueryPlan.localIdMap.get()
+    assert(!map.containsKey(plan))
+    map.put(plan, opId)
+  }
+
+  override def unsetOperatorId(plan: QueryPlan[_]): Unit = {
+    QueryPlan.localIdMap.get().remove(plan)
+  }
+
+  override def isParquetFileEncrypted(
+      fileStatus: LocatedFileStatus,
+      conf: Configuration): Boolean = {
+    // TODO: Support will be added (https://github.com/apache/incubator-gluten/pull/8501)
+    return false
   }
 }

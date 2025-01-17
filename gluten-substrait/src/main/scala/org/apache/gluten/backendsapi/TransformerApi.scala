@@ -16,6 +16,7 @@
  */
 package org.apache.gluten.backendsapi
 
+import org.apache.gluten.execution.WriteFilesExecTransformer
 import org.apache.gluten.substrait.expression.ExpressionNode
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
@@ -44,7 +45,7 @@ trait TransformerApi {
       filterExprs: Seq[Expression] = Seq.empty): Seq[InputPartition]
 
   /**
-   * Post process native config For example, for ClickHouse backend, sync 'spark.executor.cores' to
+   * Post-process native config, For example, for ClickHouse backend, sync 'spark.executor.cores' to
    * 'spark.gluten.sql.columnar.backend.ch.runtime_settings.max_threads'
    */
   def postProcessNativeConfig(
@@ -74,4 +75,9 @@ trait TransformerApi {
 
   /** This method is only used for CH backend tests */
   def invalidateSQLExecutionResource(executionId: String): Unit = {}
+
+  def genWriteParameters(write: WriteFilesExecTransformer): Any
+
+  /** use Hadoop Path class to encode the file path */
+  def encodeFilePathIfNeed(filePath: String): String = filePath
 }

@@ -159,13 +159,6 @@ case class EncodeDecodeValidator() extends FunctionValidator {
   }
 }
 
-case class ArrayJoinValidator() extends FunctionValidator {
-  override def doValidate(expr: Expression): Boolean = expr match {
-    case t: ArrayJoin => !t.children.head.isInstanceOf[Literal]
-    case _ => true
-  }
-}
-
 case class FormatStringValidator() extends FunctionValidator {
   override def doValidate(expr: Expression): Boolean = {
     val formatString = expr.asInstanceOf[FormatString]
@@ -174,20 +167,17 @@ case class FormatStringValidator() extends FunctionValidator {
 }
 
 object CHExpressionUtil {
-
   final val CH_AGGREGATE_FUNC_BLACKLIST: Map[String, FunctionValidator] = Map(
     MAX_BY -> DefaultValidator(),
     MIN_BY -> DefaultValidator()
   )
 
   final val CH_BLACKLIST_SCALAR_FUNCTION: Map[String, FunctionValidator] = Map(
-    ARRAY_JOIN -> ArrayJoinValidator(),
     SPLIT_PART -> DefaultValidator(),
     TO_UNIX_TIMESTAMP -> UnixTimeStampValidator(),
     UNIX_TIMESTAMP -> UnixTimeStampValidator(),
     SEQUENCE -> SequenceValidator(),
     GET_JSON_OBJECT -> GetJsonObjectValidator(),
-    ARRAYS_OVERLAP -> DefaultValidator(),
     SPLIT -> StringSplitValidator(),
     SUBSTRING_INDEX -> SubstringIndexValidator(),
     LPAD -> StringLPadValidator(),
@@ -195,19 +185,16 @@ object CHExpressionUtil {
     DATE_FORMAT -> DateFormatClassValidator(),
     DECODE -> EncodeDecodeValidator(),
     ENCODE -> EncodeDecodeValidator(),
-    ARRAY_REPEAT -> DefaultValidator(),
-    ARRAY_REMOVE -> DefaultValidator(),
-    ARRAYS_ZIP -> DefaultValidator(),
     DATE_FROM_UNIX_DATE -> DefaultValidator(),
     MONOTONICALLY_INCREASING_ID -> DefaultValidator(),
     SPARK_PARTITION_ID -> DefaultValidator(),
+    AT_LEAST_N_NON_NULLS -> DefaultValidator(),
     URL_DECODE -> DefaultValidator(),
     URL_ENCODE -> DefaultValidator(),
     FORMAT_STRING -> FormatStringValidator(),
     SKEWNESS -> DefaultValidator(),
     MAKE_YM_INTERVAL -> DefaultValidator(),
     MAP_ZIP_WITH -> DefaultValidator(),
-    ZIP_WITH -> DefaultValidator(),
     KURTOSIS -> DefaultValidator(),
     REGR_R2 -> DefaultValidator(),
     REGR_SLOPE -> DefaultValidator(),
@@ -215,11 +202,8 @@ object CHExpressionUtil {
     REGR_SXY -> DefaultValidator(),
     TO_UTC_TIMESTAMP -> UtcTimestampValidator(),
     FROM_UTC_TIMESTAMP -> UtcTimestampValidator(),
-    TIMESTAMP_MILLIS -> DefaultValidator(),
-    TIMESTAMP_MICROS -> DefaultValidator(),
     STACK -> DefaultValidator(),
-    TRANSFORM_KEYS -> DefaultValidator(),
-    TRANSFORM_VALUES -> DefaultValidator(),
-    RAISE_ERROR -> DefaultValidator()
+    RAISE_ERROR -> DefaultValidator(),
+    WIDTH_BUCKET -> DefaultValidator()
   )
 }

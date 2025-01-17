@@ -17,7 +17,7 @@
 package org.apache.gluten.backendsapi.clickhouse
 
 import org.apache.gluten.backendsapi.TransformerApi
-import org.apache.gluten.execution.CHHashAggregateExecTransformer
+import org.apache.gluten.execution.{CHHashAggregateExecTransformer, WriteFilesExecTransformer}
 import org.apache.gluten.expression.ConverterUtils
 import org.apache.gluten.substrait.expression.{BooleanLiteralNode, ExpressionBuilder, ExpressionNode}
 import org.apache.gluten.utils.{CHInputPartitionsUtil, ExpressionDocUtil}
@@ -26,17 +26,23 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.rpc.GlutenDriverEndpoint
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.connector.read.InputPartition
+import org.apache.spark.sql.delta.MergeTreeFileFormat
 import org.apache.spark.sql.delta.catalog.ClickHouseTableV2
 import org.apache.spark.sql.delta.files.TahoeFileIndex
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, PartitionDirectory}
+import org.apache.spark.sql.execution.datasources.orc.OrcFileFormat
+import org.apache.spark.sql.execution.datasources.parquet.ParquetFileFormat
+import org.apache.spark.sql.execution.datasources.v1.Write
 import org.apache.spark.sql.execution.datasources.v2.clickhouse.source.DeltaMergeTreeFileFormat
+import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.types._
 import org.apache.spark.util.collection.BitSet
 
 import com.google.common.collect.Lists
 import com.google.protobuf.{Any, Message}
+import org.apache.hadoop.fs.Path
 
 import java.util
 
@@ -87,32 +93,33 @@ class CHTransformerApi extends TransformerApi with Logging {
   override def postProcessNativeConfig(
       nativeConfMap: util.Map[String, String],
       backendPrefix: String): Unit = {
-    val settingPrefix = backendPrefix + ".runtime_settings."
+
+    require(backendPrefix == CHConf.CONF_PREFIX)
     if (nativeConfMap.getOrDefault("spark.memory.offHeap.enabled", "false").toBoolean) {
       val offHeapSize =
         nativeConfMap.getOrDefault("spark.gluten.memory.offHeap.size.in.bytes", "0").toLong
       if (offHeapSize > 0) {
 
         // Only set default max_bytes_before_external_group_by for CH when it is not set explicitly.
-        val groupBySpillKey = settingPrefix + "max_bytes_before_external_group_by";
+        val groupBySpillKey = CHConf.runtimeSettings("max_bytes_before_external_group_by")
         if (!nativeConfMap.containsKey(groupBySpillKey)) {
           val groupBySpillValue = offHeapSize * 0.5
           nativeConfMap.put(groupBySpillKey, groupBySpillValue.toLong.toString)
         }
 
-        val maxMemoryUsageKey = settingPrefix + "max_memory_usage";
+        val maxMemoryUsageKey = CHConf.runtimeSettings("max_memory_usage")
         if (!nativeConfMap.containsKey(maxMemoryUsageKey)) {
           val maxMemoryUsageValue = offHeapSize
-          nativeConfMap.put(maxMemoryUsageKey, maxMemoryUsageValue.toLong.toString)
+          nativeConfMap.put(maxMemoryUsageKey, maxMemoryUsageValue.toString)
         }
 
         // Only set default max_bytes_before_external_join for CH when join_algorithm is grace_hash
-        val joinAlgorithmKey = settingPrefix + "join_algorithm";
+        val joinAlgorithmKey = CHConf.runtimeSettings("join_algorithm")
         if (
           nativeConfMap.containsKey(joinAlgorithmKey) &&
           nativeConfMap.get(joinAlgorithmKey) == "grace_hash"
         ) {
-          val joinSpillKey = settingPrefix + "max_bytes_in_join";
+          val joinSpillKey = CHConf.runtimeSettings("max_bytes_in_join")
           if (!nativeConfMap.containsKey(joinSpillKey)) {
             val joinSpillValue = offHeapSize * 0.7
             nativeConfMap.put(joinSpillKey, joinSpillValue.toLong.toString)
@@ -127,24 +134,17 @@ class CHTransformerApi extends TransformerApi with Logging {
       }
     }
 
-    val hdfsConfigPrefix = backendPrefix + ".runtime_config.hdfs."
-    injectConfig("spark.hadoop.input.connect.timeout", hdfsConfigPrefix + "input_connect_timeout")
-    injectConfig("spark.hadoop.input.read.timeout", hdfsConfigPrefix + "input_read_timeout")
-    injectConfig("spark.hadoop.input.write.timeout", hdfsConfigPrefix + "input_write_timeout")
+    val hdfsConfigPrefix = CHConf.runtimeConfig("hdfs")
+    injectConfig("spark.hadoop.input.connect.timeout", s"$hdfsConfigPrefix.input_connect_timeout")
+    injectConfig("spark.hadoop.input.read.timeout", s"$hdfsConfigPrefix.input_read_timeout")
+    injectConfig("spark.hadoop.input.write.timeout", s"$hdfsConfigPrefix.input_write_timeout")
     injectConfig(
       "spark.hadoop.dfs.client.log.severity",
-      hdfsConfigPrefix + "dfs_client_log_severity")
-
-    // TODO: set default to true when metrics could be collected
-    // while ch query plan optimization is enabled.
-    val planOptKey = settingPrefix + "query_plan_enable_optimizations"
-    if (!nativeConfMap.containsKey(planOptKey)) {
-      nativeConfMap.put(planOptKey, "false")
-    }
+      s"$hdfsConfigPrefix.dfs_client_log_severity")
 
     // Respect spark config spark.sql.orc.compression.codec for CH backend
     // TODO: consider compression or orc.compression in table options.
-    val orcCompressionKey = settingPrefix + "output_format_orc_compression_method"
+    val orcCompressionKey = CHConf.runtimeSettings("output_format_orc_compression_method")
     if (!nativeConfMap.containsKey(orcCompressionKey)) {
       if (nativeConfMap.containsKey("spark.sql.orc.compression.codec")) {
         val compression = nativeConfMap.get("spark.sql.orc.compression.codec").toLowerCase()
@@ -175,10 +175,13 @@ class CHTransformerApi extends TransformerApi with Logging {
         // output name will be different from grouping expressions,
         // so using output attribute instead of grouping expression
         val groupingExpressions = hash.output.splitAt(hash.groupingExpressions.size)._1
-        val aggResultAttributes = CHHashAggregateExecTransformer.getAggregateResultAttributes(
-          groupingExpressions,
-          hash.aggregateExpressions
-        )
+        val aggResultAttributes = CHHashAggregateExecTransformer
+          .getCHAggregateResultExpressions(
+            groupingExpressions,
+            hash.aggregateExpressions,
+            hash.resultExpressions
+          )
+          .map(_.toAttribute)
         if (aggResultAttributes.size == hash.output.size) {
           aggResultAttributes
         } else {
@@ -232,4 +235,43 @@ class CHTransformerApi extends TransformerApi with Logging {
   override def invalidateSQLExecutionResource(executionId: String): Unit = {
     GlutenDriverEndpoint.invalidateResourceRelation(executionId)
   }
+
+  override def genWriteParameters(writeExec: WriteFilesExecTransformer): Any = {
+    val fileFormatStr = writeExec.fileFormat match {
+      case register: DataSourceRegister =>
+        register.shortName
+      case _ => "UnknownFileFormat"
+    }
+    val childOutput = writeExec.child.output
+
+    val partitionIndexes =
+      writeExec.partitionColumns.map(p => childOutput.indexWhere(_.exprId == p.exprId))
+    require(partitionIndexes.forall(_ >= 0))
+
+    val common = Write.Common
+      .newBuilder()
+      .setFormat(s"$fileFormatStr")
+      .setJobTaskAttemptId("") // we cannot get job and task id at the driver side)
+    partitionIndexes.foreach {
+      idx =>
+        require(idx >= 0)
+        common.addPartitionColIndex(idx)
+    }
+
+    val write = Write.newBuilder().setCommon(common.build())
+
+    writeExec.fileFormat match {
+      case d: MergeTreeFileFormat =>
+        write.setMergetree(MergeTreeFileFormat.createWrite(d.metadata))
+      case _: ParquetFileFormat =>
+        write.setParquet(Write.ParquetWrite.newBuilder().build())
+      case _: OrcFileFormat =>
+        write.setOrc(Write.OrcWrite.newBuilder().build())
+    }
+    packPBMessage(write.build())
+  }
+
+  /** use Hadoop Path class to encode the file path */
+  override def encodeFilePathIfNeed(filePath: String): String =
+    new Path(filePath).toUri.toASCIIString
 }

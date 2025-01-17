@@ -19,28 +19,15 @@
 
 #include "ConfigExtractor.h"
 #include <stdexcept>
-#ifdef ENABLE_GCS
-#include <fstream>
-#endif
 
-#include "utils/exception.h"
+#include "utils/Exception.h"
 #include "velox/connectors/hive/HiveConfig.h"
+#include "velox/connectors/hive/storage_adapters/s3fs/S3Config.h"
 
 namespace {
 
 const std::string kVeloxFileHandleCacheEnabled = "spark.gluten.sql.columnar.backend.velox.fileHandleCacheEnabled";
 const bool kVeloxFileHandleCacheEnabledDefault = false;
-
-// Log granularity of AWS C++ SDK
-const std::string kVeloxAwsSdkLogLevel = "spark.gluten.velox.awsSdkLogLevel";
-const std::string kVeloxAwsSdkLogLevelDefault = "FATAL";
-// Retry mode for AWS s3
-const std::string kVeloxS3RetryMode = "spark.gluten.velox.fs.s3a.retry.mode";
-const std::string kVeloxS3RetryModeDefault = "legacy";
-// Connection timeout for AWS s3
-const std::string kVeloxS3ConnectTimeout = "spark.gluten.velox.fs.s3a.connect.timeout";
-// Using default fs.s3a.connection.timeout value in hadoop
-const std::string kVeloxS3ConnectTimeoutDefault = "200s";
 } // namespace
 
 namespace gluten {
@@ -64,84 +51,109 @@ std::shared_ptr<facebook::velox::config::ConfigBase> getHiveConfig(
   std::unordered_map<std::string, std::string> hiveConfMap;
 
 #ifdef ENABLE_S3
-  std::string awsAccessKey = conf->get<std::string>("spark.hadoop.fs.s3a.access.key", "");
-  std::string awsSecretKey = conf->get<std::string>("spark.hadoop.fs.s3a.secret.key", "");
-  std::string awsEndpoint = conf->get<std::string>("spark.hadoop.fs.s3a.endpoint", "");
-  bool sslEnabled = conf->get<bool>("spark.hadoop.fs.s3a.connection.ssl.enabled", false);
-  bool pathStyleAccess = conf->get<bool>("spark.hadoop.fs.s3a.path.style.access", false);
-  bool useInstanceCredentials = conf->get<bool>("spark.hadoop.fs.s3a.use.instance.credentials", false);
-  std::string iamRole = conf->get<std::string>("spark.hadoop.fs.s3a.iam.role", "");
-  std::string iamRoleSessionName = conf->get<std::string>("spark.hadoop.fs.s3a.iam.role.session.name", "");
-  std::string retryMaxAttempts = conf->get<std::string>("spark.hadoop.fs.s3a.retry.limit", "20");
-  std::string retryMode = conf->get<std::string>(kVeloxS3RetryMode, kVeloxS3RetryModeDefault);
-  std::string maxConnections = conf->get<std::string>("spark.hadoop.fs.s3a.connection.maximum", "15");
-  std::string connectTimeout = conf->get<std::string>(kVeloxS3ConnectTimeout, kVeloxS3ConnectTimeoutDefault);
+  using namespace facebook::velox::filesystems;
+  std::string_view kSparkHadoopS3Prefix = "spark.hadoop.fs.s3a.";
+  std::string_view kSparkHadoopS3BucketPrefix = "spark.hadoop.fs.s3a.bucket.";
 
-  std::string awsSdkLogLevel = conf->get<std::string>(kVeloxAwsSdkLogLevel, kVeloxAwsSdkLogLevelDefault);
+  // Log granularity of AWS C++ SDK
+  const std::string kVeloxAwsSdkLogLevel = "spark.gluten.velox.awsSdkLogLevel";
+  const std::string kVeloxAwsSdkLogLevelDefault = "FATAL";
 
-  const char* envAwsAccessKey = std::getenv("AWS_ACCESS_KEY_ID");
-  if (envAwsAccessKey != nullptr) {
-    awsAccessKey = std::string(envAwsAccessKey);
-  }
-  const char* envAwsSecretKey = std::getenv("AWS_SECRET_ACCESS_KEY");
-  if (envAwsSecretKey != nullptr) {
-    awsSecretKey = std::string(envAwsSecretKey);
-  }
-  const char* envAwsEndpoint = std::getenv("AWS_ENDPOINT");
-  if (envAwsEndpoint != nullptr) {
-    awsEndpoint = std::string(envAwsEndpoint);
-  }
-  const char* envRetryMaxAttempts = std::getenv("AWS_MAX_ATTEMPTS");
-  if (envRetryMaxAttempts != nullptr) {
-    retryMaxAttempts = std::string(envRetryMaxAttempts);
-  }
-  const char* envRetryMode = std::getenv("AWS_RETRY_MODE");
-  if (envRetryMode != nullptr) {
-    retryMode = std::string(envRetryMode);
-  }
+  const std::unordered_map<S3Config::Keys, std::pair<std::string, std::optional<std::string>>> sparkSuffixes = {
+      {S3Config::Keys::kAccessKey, std::make_pair("access.key", std::nullopt)},
+      {S3Config::Keys::kSecretKey, std::make_pair("secret.key", std::nullopt)},
+      {S3Config::Keys::kEndpoint, std::make_pair("endpoint", std::nullopt)},
+      {S3Config::Keys::kSSLEnabled, std::make_pair("connection.ssl.enabled", "false")},
+      {S3Config::Keys::kPathStyleAccess, std::make_pair("path.style.access", "false")},
+      {S3Config::Keys::kMaxAttempts, std::make_pair("retry.limit", std::nullopt)},
+      {S3Config::Keys::kRetryMode, std::make_pair("retry.mode", "legacy")},
+      {S3Config::Keys::kMaxConnections, std::make_pair("connection.maximum", "15")},
+      {S3Config::Keys::kConnectTimeout, std::make_pair("connection.timeout", "200s")},
+      {S3Config::Keys::kUseInstanceCredentials, std::make_pair("instance.credentials", "false")},
+      {S3Config::Keys::kIamRole, std::make_pair("iam.role", std::nullopt)},
+      {S3Config::Keys::kIamRoleSessionName, std::make_pair("iam.role.session.name", "gluten-session")},
+  };
 
-  if (useInstanceCredentials) {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3UseInstanceCredentials] = "true";
-  } else if (!iamRole.empty()) {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3IamRole] = iamRole;
-    if (!iamRoleSessionName.empty()) {
-      hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3IamRoleSessionName] = iamRoleSessionName;
+  // get Velox S3 config key from Spark Suffix.
+  auto getVeloxKey = [&](std::string_view suffix) {
+    for (const auto& [key, value] : sparkSuffixes) {
+      if (value.first == suffix) {
+        return std::optional<S3Config::Keys>(key);
+      }
     }
-  } else {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3AwsAccessKey] = awsAccessKey;
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3AwsSecretKey] = awsSecretKey;
+    return std::optional<S3Config::Keys>(std::nullopt);
+  };
+
+  auto sparkBaseConfigValue = [&](S3Config::Keys key) {
+    std::stringstream ss;
+    auto keyValue = sparkSuffixes.find(key)->second;
+    ss << kSparkHadoopS3Prefix << keyValue.first;
+    auto sparkKey = ss.str();
+    if (conf->valueExists(sparkKey)) {
+      return static_cast<std::optional<std::string>>(conf->get<std::string>(sparkKey));
+    }
+    // Return default value.
+    return keyValue.second;
+  };
+
+  auto setConfigIfPresent = [&](S3Config::Keys key) {
+    auto sparkConfig = sparkBaseConfigValue(key);
+    if (sparkConfig.has_value()) {
+      hiveConfMap[S3Config::baseConfigKey(key)] = sparkConfig.value();
+    }
+  };
+
+  auto setFromEnvOrConfigIfPresent = [&](std::string_view envName, S3Config::Keys key) {
+    const char* envValue = std::getenv(envName.data());
+    if (envValue != nullptr) {
+      hiveConfMap[S3Config::baseConfigKey(key)] = std::string(envValue);
+    } else {
+      setConfigIfPresent(key);
+    }
+  };
+
+  setFromEnvOrConfigIfPresent("AWS_ENDPOINT", S3Config::Keys::kEndpoint);
+  setFromEnvOrConfigIfPresent("AWS_MAX_ATTEMPTS", S3Config::Keys::kMaxAttempts);
+  setFromEnvOrConfigIfPresent("AWS_RETRY_MODE", S3Config::Keys::kRetryMode);
+  setFromEnvOrConfigIfPresent("AWS_ACCESS_KEY_ID", S3Config::Keys::kAccessKey);
+  setFromEnvOrConfigIfPresent("AWS_SECRET_ACCESS_KEY", S3Config::Keys::kSecretKey);
+  setConfigIfPresent(S3Config::Keys::kUseInstanceCredentials);
+  setConfigIfPresent(S3Config::Keys::kIamRole);
+  setConfigIfPresent(S3Config::Keys::kIamRoleSessionName);
+  setConfigIfPresent(S3Config::Keys::kSSLEnabled);
+  setConfigIfPresent(S3Config::Keys::kPathStyleAccess);
+  setConfigIfPresent(S3Config::Keys::kMaxConnections);
+  setConfigIfPresent(S3Config::Keys::kConnectTimeout);
+
+  hiveConfMap[facebook::velox::filesystems::S3Config::kS3LogLevel] =
+      conf->get<std::string>(kVeloxAwsSdkLogLevel, kVeloxAwsSdkLogLevelDefault);
+  ;
+
+  // Convert all Spark bucket configs to Velox bucket configs.
+  for (const auto& [key, value] : conf->rawConfigs()) {
+    if (key.find(kSparkHadoopS3BucketPrefix) == 0) {
+      std::string_view skey = key;
+      auto remaining = skey.substr(kSparkHadoopS3BucketPrefix.size());
+      int dot = remaining.find(".");
+      auto bucketName = remaining.substr(0, dot);
+      auto suffix = remaining.substr(dot + 1);
+      auto veloxKey = getVeloxKey(suffix);
+
+      if (veloxKey.has_value()) {
+        hiveConfMap[S3Config::bucketConfigKey(veloxKey.value(), bucketName)] = value;
+      }
+    }
   }
-  // Only need to set s3 endpoint when not use instance credentials.
-  if (!useInstanceCredentials) {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3Endpoint] = awsEndpoint;
-  }
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3SSLEnabled] = sslEnabled ? "true" : "false";
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3PathStyleAccess] = pathStyleAccess ? "true" : "false";
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3LogLevel] = awsSdkLogLevel;
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3MaxAttempts] = retryMaxAttempts;
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3RetryMode] = retryMode;
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3MaxConnections] = maxConnections;
-  hiveConfMap[facebook::velox::connector::hive::HiveConfig::kS3ConnectTimeout] = connectTimeout;
 #endif
 
 #ifdef ENABLE_GCS
   // https://github.com/GoogleCloudDataproc/hadoop-connectors/blob/master/gcs/CONFIGURATION.md#api-client-configuration
   auto gsStorageRootUrl = conf->get<std::string>("spark.hadoop.fs.gs.storage.root.url");
   if (gsStorageRootUrl.hasValue()) {
-    std::string url = gsStorageRootUrl.value();
-    std::string gcsScheme;
-    std::string gcsEndpoint;
+    std::string gcsEndpoint = gsStorageRootUrl.value();
 
-    const auto sep = std::string("://");
-    const auto pos = url.find_first_of(sep);
-    if (pos != std::string::npos) {
-      gcsScheme = url.substr(0, pos);
-      gcsEndpoint = url.substr(pos + sep.length());
-    }
-
-    if (!gcsEndpoint.empty() && !gcsScheme.empty()) {
-      hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGCSScheme] = gcsScheme;
-      hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGCSEndpoint] = gcsEndpoint;
+    if (!gcsEndpoint.empty()) {
+      hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGcsEndpoint] = gcsEndpoint;
     }
   }
 
@@ -149,13 +161,13 @@ std::shared_ptr<facebook::velox::config::ConfigBase> getHiveConfig(
   // https://cloud.google.com/cpp/docs/reference/storage/latest/classgoogle_1_1cloud_1_1storage_1_1LimitedErrorCountRetryPolicy
   auto gsMaxRetryCount = conf->get<std::string>("spark.hadoop.fs.gs.http.max.retry");
   if (gsMaxRetryCount.hasValue()) {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGCSMaxRetryCount] = gsMaxRetryCount.value();
+    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGcsMaxRetryCount] = gsMaxRetryCount.value();
   }
 
   // https://cloud.google.com/cpp/docs/reference/storage/latest/classgoogle_1_1cloud_1_1storage_1_1LimitedTimeRetryPolicy
   auto gsMaxRetryTime = conf->get<std::string>("spark.hadoop.fs.gs.http.max.retry-time");
   if (gsMaxRetryTime.hasValue()) {
-    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGCSMaxRetryTime] = gsMaxRetryTime.value();
+    hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGcsMaxRetryTime] = gsMaxRetryTime.value();
   }
 
   // https://github.com/GoogleCloudDataproc/hadoop-connectors/blob/master/gcs/CONFIGURATION.md#authentication
@@ -166,15 +178,24 @@ std::shared_ptr<facebook::velox::config::ConfigBase> getHiveConfig(
       auto gsAuthServiceAccountJsonKeyfile =
           conf->get<std::string>("spark.hadoop.fs.gs.auth.service.account.json.keyfile");
       if (gsAuthServiceAccountJsonKeyfile.hasValue()) {
-        auto stream = std::ifstream(gsAuthServiceAccountJsonKeyfile.value());
-        stream.exceptions(std::ios::badbit);
-        std::string gsAuthServiceAccountJson = std::string(std::istreambuf_iterator<char>(stream.rdbuf()), {});
-        hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGCSCredentials] = gsAuthServiceAccountJson;
+        hiveConfMap[facebook::velox::connector::hive::HiveConfig::kGcsCredentialsPath] =
+            gsAuthServiceAccountJsonKeyfile.value();
       } else {
         LOG(WARNING) << "STARTUP: conf spark.hadoop.fs.gs.auth.type is set to SERVICE_ACCOUNT_JSON_KEYFILE, "
                         "however conf spark.hadoop.fs.gs.auth.service.account.json.keyfile is not set";
         throw GlutenException("Conf spark.hadoop.fs.gs.auth.service.account.json.keyfile is not set");
       }
+    }
+  }
+#endif
+
+#ifdef ENABLE_ABFS
+  std::string_view kSparkHadoopPrefix = "spark.hadoop.";
+  std::string_view kSparkHadoopAbfsPrefix = "spark.hadoop.fs.azure.";
+  for (const auto& [key, value] : conf->rawConfigs()) {
+    if (key.find(kSparkHadoopAbfsPrefix) == 0) {
+      // Remove the SparkHadoopPrefix
+      hiveConfMap[key.substr(kSparkHadoopPrefix.size())] = value;
     }
   }
 #endif

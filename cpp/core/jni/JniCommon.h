@@ -26,11 +26,12 @@
 #include "compute/Runtime.h"
 #include "config/GlutenConfig.h"
 #include "memory/AllocationListener.h"
+#include "operators/writer/ArrowWriter.h"
 #include "shuffle/rss/RssClient.h"
 #include "utils/Compression.h"
+#include "utils/Exception.h"
 #include "utils/ObjectStore.h"
 #include "utils/ResourceMap.h"
-#include "utils/exception.h"
 
 static jint jniVersion = JNI_VERSION_1_8;
 

@@ -47,6 +47,7 @@ object ExpressionNames {
   final val FIRST_IGNORE_NULL = "first_ignore_null"
   final val APPROX_DISTINCT = "approx_distinct"
   final val APPROX_PERCENTILE = "approx_percentile"
+  final val PERCENTILE = "percentile"
   final val SKEWNESS = "skewness"
   final val KURTOSIS = "kurtosis"
   final val REGR_SLOPE = "regr_slope"
@@ -223,6 +224,7 @@ object ExpressionNames {
   final val UNIX_SECONDS = "unix_seconds"
   final val UNIX_MILLIS = "unix_millis"
   final val UNIX_MICROS = "unix_micros"
+  final val TIMESTAMP_SECONDS = "timestamp_seconds"
   final val TIMESTAMP_MILLIS = "timestamp_millis"
   final val TIMESTAMP_MICROS = "timestamp_micros"
   final val PRECYSE_TIMESTAMP_CONVERSION = "precise_timestamp_conversion"
@@ -272,6 +274,7 @@ object ExpressionNames {
   final val SHUFFLE = "shuffle"
   final val ZIP_WITH = "zip_with"
   final val FLATTEN = "flatten"
+  final val ARRAY_INSERT = "array_insert"
 
   // Map functions
   final val CREATE_MAP = "map"
@@ -305,6 +308,7 @@ object ExpressionNames {
   final val IN = "in"
   final val IN_SET = "in_set"
   final val SCALAR_SUBQUERY = "scalar_subquery"
+  final val DYNAMIC_PRUNING_EXPRESSION = "dynamic_pruning_expression"
   final val AGGREGATE = "aggregate"
   final val LAMBDAFUNCTION = "lambdafunction"
   final val EXPLODE = "explode"
@@ -312,6 +316,7 @@ object ExpressionNames {
   final val INLINE = "inline"
   final val POSEXPLODE = "posexplode"
   final val CHECK_OVERFLOW = "check_overflow"
+  final val CHECK_OVERFLOW_IN_TABLE_INSERT = "check_overflow_in_table_insert"
   final val MAKE_DECIMAL = "make_decimal"
   final val PROMOTE_PRECISION = "promote_precision"
   final val SPARK_PARTITION_ID = "spark_partition_id"
@@ -320,6 +325,7 @@ object ExpressionNames {
   final val REPLICATE_ROWS = "replicaterows"
   final val RAISE_ERROR = "raise_error"
   final val VERSION = "version"
+  final val AT_LEAST_N_NON_NULLS = "at_least_n_non_nulls"
 
   // Directly use child expression transformer
   final val KNOWN_NULLABLE = "known_nullable"

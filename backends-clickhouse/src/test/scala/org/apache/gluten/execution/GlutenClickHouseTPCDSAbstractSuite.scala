@@ -16,14 +16,15 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.benchmarks.GenTPCDSTableScripts
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.utils.{Arm, UTSystemParameters}
 
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.{DataFrame, Row, SparkSession}
 import org.apache.spark.sql.delta.{ClickhouseSnapshot, DeltaLog}
+import org.apache.spark.sql.execution.datasources.v2.clickhouse.ClickHouseConfig
 import org.apache.spark.sql.types.{StructField, StructType}
 
 import org.apache.commons.io.FileUtils
@@ -43,7 +44,7 @@ abstract class GlutenClickHouseTPCDSAbstractSuite
   protected val tablesPath: String = UTSystemParameters.tpcdsDecimalDataPath + "/"
   protected val db_name: String = "tpcdsdb"
   protected val tpcdsQueries: String =
-    rootPath + "../../../../gluten-core/src/test/resources/tpcds-queries/tpcds.queries.original"
+    rootPath + "../../../../tools/gluten-it/common/src/main/resources/tpcds-queries"
   protected val queriesResults: String = rootPath + "tpcds-decimal-queries-output"
 
   /** Return values: (sql num, is fall back) */
@@ -62,7 +63,7 @@ abstract class GlutenClickHouseTPCDSAbstractSuite
         })
 
   protected def fallbackSets(isAqe: Boolean): Set[Int] = {
-    if (isSparkVersionGE("3.5")) Set(44, 67, 70) else Set.empty[Int]
+    Set.empty[Int]
   }
   protected def excludedTpcdsQueries: Set[String] = Set(
     "q66" // inconsistent results
@@ -130,8 +131,7 @@ abstract class GlutenClickHouseTPCDSAbstractSuite
       .set("spark.databricks.delta.snapshotPartitions", "1")
       .set("spark.databricks.delta.properties.defaults.checkpointInterval", "5")
       .set("spark.databricks.delta.stalenessLimit", "3600000")
-      .set("spark.gluten.sql.columnar.columnarToRow", "true")
-      .set("spark.gluten.sql.columnar.backend.ch.worker.id", "1")
+      .set(ClickHouseConfig.CLICKHOUSE_WORKER_ID, "1")
       .set(GlutenConfig.GLUTEN_LIB_PATH, UTSystemParameters.clickHouseLibPath)
       .set("spark.gluten.sql.columnar.iterator", "true")
       .set("spark.gluten.sql.columnar.hashagg.enablefinal", "true")

@@ -16,33 +16,38 @@
  */
 package org.apache.spark.sql.execution.datasources.v1
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.sql.internal.SQLConf
 
-import scala.collection.JavaConverters.mapAsJavaMapConverter
-import scala.collection.mutable
+import org.apache.hadoop.mapreduce.TaskAttemptContext
+
+import java.{util => ju}
 
 class CHParquetWriterInjects extends CHFormatWriterInjects {
   override def nativeConf(
       options: Map[String, String],
-      compressionCodec: String): java.util.Map[String, String] = {
+      compressionCodec: String): ju.Map[String, String] = {
     // pass options to native so that velox can take user-specified conf to write parquet,
     // i.e., compression, block size, block rows.
-    val sparkOptions = new mutable.HashMap[String, String]()
+    val sparkOptions = new ju.HashMap[String, String]()
     sparkOptions.put(SQLConf.PARQUET_COMPRESSION.key, compressionCodec)
     val blockSize = options.getOrElse(
       GlutenConfig.PARQUET_BLOCK_SIZE,
-      GlutenConfig.getConf.columnarParquetWriteBlockSize.toString)
+      GlutenConfig.get.columnarParquetWriteBlockSize.toString)
     sparkOptions.put(GlutenConfig.PARQUET_BLOCK_SIZE, blockSize)
     val blockRows = options.getOrElse(
       GlutenConfig.PARQUET_BLOCK_ROWS,
-      GlutenConfig.getConf.columnarParquetWriteBlockRows.toString)
+      GlutenConfig.get.columnarParquetWriteBlockRows.toString)
     sparkOptions.put(GlutenConfig.PARQUET_BLOCK_ROWS, blockRows)
-    sparkOptions.asJava
+    sparkOptions
   }
 
-  override def getFormatName(): String = {
-    "parquet"
-  }
+  override def createNativeWrite(outputPath: String, context: TaskAttemptContext): Write = Write
+    .newBuilder()
+    .setCommon(Write.Common.newBuilder().setFormat(formatName).setJobTaskAttemptId("").build())
+    .setParquet(Write.ParquetWrite.newBuilder().build())
+    .build()
+  override val formatName: String = "parquet"
+
 }

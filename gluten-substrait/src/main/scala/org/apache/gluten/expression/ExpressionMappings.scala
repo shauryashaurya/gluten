@@ -16,8 +16,8 @@
  */
 package org.apache.gluten.expression
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.expression.ExpressionNames._
 import org.apache.gluten.sql.shims.SparkShimLoader
 
@@ -199,6 +199,7 @@ object ExpressionMappings {
     Sig[UnixSeconds](UNIX_SECONDS),
     Sig[UnixMillis](UNIX_MILLIS),
     Sig[UnixMicros](UNIX_MICROS),
+    Sig[SecondsToTimestamp](TIMESTAMP_SECONDS),
     Sig[MillisToTimestamp](TIMESTAMP_MILLIS),
     Sig[MicrosToTimestamp](TIMESTAMP_MICROS),
     Sig[PreciseTimestampConversion](PRECYSE_TIMESTAMP_CONVERSION),
@@ -280,11 +281,12 @@ object ExpressionMappings {
     Sig[In](IN),
     Sig[InSet](IN_SET),
     Sig[ScalarSubquery](SCALAR_SUBQUERY),
+    Sig[DynamicPruningExpression](DYNAMIC_PRUNING_EXPRESSION),
     Sig[CheckOverflow](CHECK_OVERFLOW),
     Sig[MakeDecimal](MAKE_DECIMAL),
     Sig[PromotePrecision](PROMOTE_PRECISION),
-    Sig[MonotonicallyIncreasingID](MONOTONICALLY_INCREASING_ID),
     Sig[SparkPartitionID](SPARK_PARTITION_ID),
+    Sig[AtLeastNNonNulls](AT_LEAST_N_NON_NULLS),
     Sig[WidthBucket](WIDTH_BUCKET),
     Sig[ReplicateRows](REPLICATE_ROWS),
     Sig[RaiseError](RAISE_ERROR),
@@ -319,7 +321,8 @@ object ExpressionMappings {
     Sig[First](FIRST),
     Sig[Skewness](SKEWNESS),
     Sig[Kurtosis](KURTOSIS),
-    Sig[ApproximatePercentile](APPROX_PERCENTILE)
+    Sig[ApproximatePercentile](APPROX_PERCENTILE),
+    Sig[Percentile](PERCENTILE)
   ) ++ SparkShimLoader.getSparkShims.aggregateExpressionMappings
 
   /** Mapping Spark window expression to Substrait function name */
@@ -336,7 +339,7 @@ object ExpressionMappings {
   )
 
   def expressionsMap: Map[Class[_], String] = {
-    val blacklist = GlutenConfig.getConf.expressionBlacklist
+    val blacklist = GlutenConfig.get.expressionBlacklist
     val filtered = (defaultExpressionsMap ++ toMap(
       BackendsApiManager.getSparkPlanExecApiInstance.extraExpressionMappings)).filterNot(
       kv => blacklist.contains(kv._2))

@@ -17,19 +17,15 @@
 #pragma once
 #include <string>
 #include <vector>
+#include <map>
 
 namespace local_engine
 {
-using PartitionValue = std::pair<std::string, std::string>;
-using PartitionValues = std::vector<PartitionValue>;
-
 class GlutenStringUtils
 {
 public:
-    static PartitionValues parsePartitionTablePath(const std::string & file);
     static bool isNullPartitionValue(const std::string & value);
 
-    static std::string dumpPartitionValue(const PartitionValue & value);
-    static std::string dumpPartitionValues(const PartitionValues & values);
+    static std::string dumpPartitionValues(const std::map<std::string, std::string> & values);
 };
 }

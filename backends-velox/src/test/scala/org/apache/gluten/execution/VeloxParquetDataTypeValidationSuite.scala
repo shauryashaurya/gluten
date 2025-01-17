@@ -254,7 +254,10 @@ class VeloxParquetDataTypeValidationSuite extends VeloxWholeStageTransformerSuit
                          |""".stripMargin) {
       df =>
         {
-          assert(getExecutedPlan(df).exists(plan => plan.isInstanceOf[ColumnarUnionExec]))
+          assert(
+            getExecutedPlan(df).exists(
+              plan =>
+                plan.isInstanceOf[ColumnarUnionExec] || plan.isInstanceOf[UnionExecTransformer]))
         }
     }
 
@@ -264,7 +267,7 @@ class VeloxParquetDataTypeValidationSuite extends VeloxWholeStageTransformerSuit
                          | select date, int from type1 limit 100
                          |) where int != 0 limit 10;
                          |""".stripMargin) {
-      checkGlutenOperatorMatch[LimitTransformer]
+      checkGlutenOperatorMatch[LimitExecTransformer]
     }
 
     // Validation: Window.
@@ -283,7 +286,9 @@ class VeloxParquetDataTypeValidationSuite extends VeloxWholeStageTransformerSuit
     }
 
     // Validation: ShuffledHashJoin.
-    withSQLConf("spark.sql.autoBroadcastJoinThreshold" -> "-1") {
+    withSQLConf(
+      "spark.gluten.sql.columnar.forceShuffledHashJoin" -> "true",
+      "spark.sql.autoBroadcastJoinThreshold" -> "-1") {
       runQueryAndCompare(
         "select type1.date from type1," +
           " type2 where type1.date = type2.date") {

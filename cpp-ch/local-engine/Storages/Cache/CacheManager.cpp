@@ -23,19 +23,22 @@
 #include <Interpreters/Cache/FileCache.h>
 #include <Interpreters/Cache/FileCacheFactory.h>
 #include <Interpreters/Context.h>
-#include <Parser/MergeTreeRelParser.h>
 #include <Processors/Executors/PipelineExecutor.h>
 #include <Processors/QueryPlan/Optimizations/QueryPlanOptimizationSettings.h>
+#include <Processors/QueryPlan/QueryPlan.h>
 #include <QueryPipeline/QueryPipelineBuilder.h>
-#include <Storages/Mergetree/MetaDataHelper.h>
+#include <Storages/MergeTree/MetaDataHelper.h>
+#include <jni/jni_common.h>
 #include <Common/Logger.h>
 #include <Common/ThreadPool.h>
 #include <Common/logger_useful.h>
 
-#include <jni/jni_common.h>
-
 namespace DB
 {
+namespace Setting
+{
+extern const SettingsUInt64 max_block_size;
+}
 namespace ErrorCodes
 {
 extern const int INVALID_STATE;
@@ -51,7 +54,7 @@ extern const Metric LocalThreadScheduled;
 
 namespace local_engine
 {
-
+using namespace DB;
 jclass CacheManager::cache_result_class = nullptr;
 jmethodID CacheManager::cache_result_constructor = nullptr;
 
@@ -67,7 +70,7 @@ CacheManager & CacheManager::instance()
     return cache_manager;
 }
 
-void CacheManager::initialize(DB::ContextMutablePtr context_)
+void CacheManager::initialize(const DB::ContextMutablePtr & context_)
 {
     auto & manager = instance();
     manager.context = context_;
@@ -75,20 +78,40 @@ void CacheManager::initialize(DB::ContextMutablePtr context_)
 
 struct CacheJobContext
 {
-    MergeTreeTable table;
+    MergeTreeTableInstance table;
 };
 
-Task CacheManager::cachePart(const MergeTreeTable& table, const MergeTreePart& part, const std::unordered_set<String> & columns)
+Task CacheManager::cachePart(
+    const MergeTreeTableInstance & table, const MergeTreePart & part, const std::unordered_set<String> & columns, bool only_meta_cache)
 {
     CacheJobContext job_context{table};
     job_context.table.parts.clear();
     job_context.table.parts.push_back(part);
     job_context.table.snapshot_id = "";
-    Task task = [job_detail = job_context, context = this->context, read_columns = columns]()
+    MergeTreeCacheConfig config = MergeTreeCacheConfig::loadFromContext(context);
+    Task task = [job_detail = job_context, context = this->context, read_columns = columns, only_meta_cache,
+        prefetch_data = config.enable_data_prefetch]()
     {
         try
         {
-            auto storage = MergeTreeRelParser::parseStorage(job_detail.table, context, true);
+            auto storage = job_detail.table.restoreStorage(context);
+            std::vector<DataPartPtr> selected_parts
+                = StorageMergeTreeFactory::getDataPartsByNames(storage->getStorageID(), "", {job_detail.table.parts.front().name});
+
+            if (only_meta_cache)
+            {
+                LOG_INFO(
+                    getLogger("CacheManager"),
+                    "Load meta cache of table {}.{} part {} success.",
+                    job_detail.table.database,
+                    job_detail.table.table,
+                    job_detail.table.parts.front().name);
+                return;
+            }
+            // prefetch part data
+            if (prefetch_data)
+                storage->prefetchPartDataFile({job_detail.table.parts.front().name});
+
             auto storage_snapshot = std::make_shared<StorageSnapshot>(*storage, storage->getInMemoryMetadataPtr());
             NamesAndTypesList names_and_types_list;
             auto meta_columns = storage->getInMemoryMetadata().getColumns();
@@ -98,21 +121,20 @@ Task CacheManager::cachePart(const MergeTreeTable& table, const MergeTreePart& p
                     names_and_types_list.push_back(NameAndTypePair(column.name, column.type));
             }
             auto query_info = buildQueryInfo(names_and_types_list);
-            std::vector<DataPartPtr> selected_parts
-                = StorageMergeTreeFactory::getDataPartsByNames(storage->getStorageID(), "", {job_detail.table.parts.front().name});
             auto read_step = storage->reader.readFromParts(
                 selected_parts,
-                /* alter_conversions = */
-                {},
+                storage->getMutationsSnapshot({}),
                 names_and_types_list.getNames(),
                 storage_snapshot,
                 *query_info,
                 context,
-                context->getSettingsRef().max_block_size,
+                context->getSettingsRef()[Setting::max_block_size],
                 1);
             QueryPlan plan;
             plan.addStep(std::move(read_step));
-            auto pipeline_builder = plan.buildQueryPipeline({}, {});
+            DB::QueryPlanOptimizationSettings optimization_settings{context};
+            DB::BuildQueryPipelineSettings build_settings{context};
+            auto pipeline_builder = plan.buildQueryPipeline(optimization_settings, build_settings);
             auto pipeline = QueryPipelineBuilder::getPipeline(std::move(*pipeline_builder.get()));
             PullingPipelineExecutor executor(pipeline);
             while (true)
@@ -132,14 +154,13 @@ Task CacheManager::cachePart(const MergeTreeTable& table, const MergeTreePart& p
     return std::move(task);
 }
 
-JobId CacheManager::cacheParts(const String& table_def, const std::unordered_set<String>& columns)
+JobId CacheManager::cacheParts(const MergeTreeTableInstance & table, const std::unordered_set<String>& columns, bool only_meta_cache)
 {
-    auto table = parseMergeTreeTableString(table_def);
     JobId id = toString(UUIDHelpers::generateV4());
     Job job(id);
     for (const auto & part : table.parts)
     {
-        job.addTask(cachePart(table, part, columns));
+        job.addTask(cachePart(table, part, columns, only_meta_cache));
     }
     auto& scheduler = JobScheduler::instance();
     scheduler.scheduleJob(std::move(job));
@@ -148,7 +169,7 @@ JobId CacheManager::cacheParts(const String& table_def, const std::unordered_set
 
 jobject CacheManager::getCacheStatus(JNIEnv * env, const String & jobId)
 {
-    auto& scheduler = JobScheduler::instance();
+    auto & scheduler = JobScheduler::instance();
     auto job_status = scheduler.getJobSatus(jobId);
     int status = 0;
     String message;
@@ -206,13 +227,14 @@ JobId CacheManager::cacheFiles(substrait::ReadRel::LocalFiles file_infos)
 {
     JobId id = toString(UUIDHelpers::generateV4());
     Job job(id);
+    DB::ReadSettings read_settings = context->getReadSettings();
 
     if (file_infos.items_size())
     {
         const Poco::URI file_uri(file_infos.items().Get(0).uri_file());
         const auto read_buffer_builder = ReadBufferBuilderFactory::instance().createBuilder(file_uri.getScheme(), context);
 
-        if (read_buffer_builder->file_cache)
+        if (context->getConfigRef().getBool("gluten_cache.local.enabled", false))
             for (const auto & file : file_infos.items())
                 job.addTask(cacheFile(file, read_buffer_builder));
         else

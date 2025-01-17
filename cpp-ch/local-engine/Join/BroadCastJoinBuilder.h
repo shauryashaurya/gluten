@@ -39,7 +39,8 @@ std::shared_ptr<StorageJoinFromReadBuffer> buildJoin(
     bool has_mixed_join_condition,
     bool is_existence_join,
     const std::string & named_struct,
-    bool is_null_aware_anti_join);
+    bool is_null_aware_anti_join,
+    bool has_null_key_values);
 void cleanBuildHashTable(const std::string & hash_table_id, jlong instance);
 std::shared_ptr<StorageJoinFromReadBuffer> getJoin(const std::string & hash_table_id);
 

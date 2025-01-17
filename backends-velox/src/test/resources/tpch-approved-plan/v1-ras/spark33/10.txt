@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (100)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (67)
+   VeloxColumnarToRow (67)
    +- TakeOrderedAndProjectExecTransformer (66)
       +- ^ ProjectExecTransformer (64)
          +- ^ RegularHashAggregateExecTransformer (63)
@@ -30,29 +30,29 @@ AdaptiveSparkPlan (100)
                                     :                 :                 :     +- ColumnarExchange (6)
                                     :                 :                 :        +- VeloxResizeBatches (5)
                                     :                 :                 :           +- ^ ProjectExecTransformer (3)
-                                    :                 :                 :              +- ^ NoopFilter (2)
-                                    :                 :                 :                 +- ^ Scan parquet (1)
+                                    :                 :                 :              +- ^ FilterExecTransformer (2)
+                                    :                 :                 :                 +- ^ ScanTransformer parquet  (1)
                                     :                 :                 +- ^ InputIteratorTransformer (18)
                                     :                 :                    +- ShuffleQueryStage (16), Statistics(X)
                                     :                 :                       +- ColumnarExchange (15)
                                     :                 :                          +- VeloxResizeBatches (14)
                                     :                 :                             +- ^ ProjectExecTransformer (12)
-                                    :                 :                                +- ^ NoopFilter (11)
-                                    :                 :                                   +- ^ Scan parquet (10)
+                                    :                 :                                +- ^ FilterExecTransformer (11)
+                                    :                 :                                   +- ^ ScanTransformer parquet  (10)
                                     :                 +- ^ InputIteratorTransformer (35)
                                     :                    +- ShuffleQueryStage (33), Statistics(X)
                                     :                       +- ColumnarExchange (32)
                                     :                          +- VeloxResizeBatches (31)
                                     :                             +- ^ ProjectExecTransformer (29)
-                                    :                                +- ^ NoopFilter (28)
-                                    :                                   +- ^ Scan parquet (27)
+                                    :                                +- ^ FilterExecTransformer (28)
+                                    :                                   +- ^ ScanTransformer parquet  (27)
                                     +- ^ InputIteratorTransformer (52)
                                        +- ShuffleQueryStage (50), Statistics(X)
                                           +- ColumnarExchange (49)
                                              +- VeloxResizeBatches (48)
                                                 +- ^ ProjectExecTransformer (46)
-                                                   +- ^ NoopFilter (45)
-                                                      +- ^ Scan parquet (44)
+                                                   +- ^ FilterExecTransformer (45)
+                                                      +- ^ ScanTransformer parquet  (44)
 +- == Initial Plan ==
    TakeOrderedAndProject (99)
    +- HashAggregate (98)
@@ -88,16 +88,16 @@ AdaptiveSparkPlan (100)
                            +- Scan parquet (90)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [7]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(c_custkey), IsNotNull(c_nationkey)]
 ReadSchema: struct<c_custkey:bigint,c_name:string,c_address:string,c_nationkey:bigint,c_phone:string,c_acctbal:decimal(12,2),c_comment:string>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [7]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X]
-Arguments: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X]
+Arguments: (isnotnull(c_custkey#X) AND isnotnull(c_nationkey#X))
 
 (3) ProjectExecTransformer
 Output [8]: [hash(c_custkey#X, 42) AS hash_partition_key#X, c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X]
@@ -125,16 +125,16 @@ Input [7]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acct
 (9) InputIteratorTransformer
 Input [7]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X]
 
-(10) Scan parquet
+(10) ScanTransformer parquet 
 Output [3]: [o_orderkey#X, o_custkey#X, o_orderdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(o_orderdate), GreaterThanOrEqual(o_orderdate,1993-10-01), LessThan(o_orderdate,1994-01-01), IsNotNull(o_custkey), IsNotNull(o_orderkey)]
 ReadSchema: struct<o_orderkey:bigint,o_custkey:bigint,o_orderdate:date>
 
-(11) NoopFilter
+(11) FilterExecTransformer
 Input [3]: [o_orderkey#X, o_custkey#X, o_orderdate#X]
-Arguments: [o_orderkey#X, o_custkey#X, o_orderdate#X]
+Arguments: ((((isnotnull(o_orderdate#X) AND (o_orderdate#X >= 1993-10-01)) AND (o_orderdate#X < 1994-01-01)) AND isnotnull(o_custkey#X)) AND isnotnull(o_orderkey#X))
 
 (12) ProjectExecTransformer
 Output [3]: [hash(o_custkey#X, 42) AS hash_partition_key#X, o_orderkey#X, o_custkey#X]
@@ -193,16 +193,16 @@ Input [8]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acct
 (26) InputIteratorTransformer
 Input [8]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X, o_orderkey#X]
 
-(27) Scan parquet
+(27) ScanTransformer parquet 
 Output [4]: [l_orderkey#X, l_extendedprice#X, l_discount#X, l_returnflag#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_returnflag), EqualTo(l_returnflag,R), IsNotNull(l_orderkey)]
 ReadSchema: struct<l_orderkey:bigint,l_extendedprice:decimal(12,2),l_discount:decimal(12,2),l_returnflag:string>
 
-(28) NoopFilter
+(28) FilterExecTransformer
 Input [4]: [l_orderkey#X, l_extendedprice#X, l_discount#X, l_returnflag#X]
-Arguments: [l_orderkey#X, l_extendedprice#X, l_discount#X, l_returnflag#X]
+Arguments: ((isnotnull(l_returnflag#X) AND (l_returnflag#X = R)) AND isnotnull(l_orderkey#X))
 
 (29) ProjectExecTransformer
 Output [4]: [hash(l_orderkey#X, 42) AS hash_partition_key#X, l_orderkey#X, l_extendedprice#X, l_discount#X]
@@ -261,16 +261,16 @@ Input [9]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acct
 (43) InputIteratorTransformer
 Input [9]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X, l_extendedprice#X, l_discount#X]
 
-(44) Scan parquet
+(44) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(n_nationkey)]
 ReadSchema: struct<n_nationkey:bigint,n_name:string>
 
-(45) NoopFilter
+(45) FilterExecTransformer
 Input [2]: [n_nationkey#X, n_name#X]
-Arguments: [n_nationkey#X, n_name#X]
+Arguments: isnotnull(n_nationkey#X)
 
 (46) ProjectExecTransformer
 Output [3]: [hash(n_nationkey#X, 42) AS hash_partition_key#X, n_nationkey#X, n_name#X]
@@ -304,11 +304,11 @@ Right keys [1]: [n_nationkey#X]
 Join condition: None
 
 (54) ProjectExecTransformer
-Output [10]: [c_custkey#X, c_name#X, c_address#X, c_phone#X, c_acctbal#X, c_comment#X, l_extendedprice#X, l_discount#X, n_name#X, CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2)))), DecimalType(26,4)) AS _pre_X#X]
+Output [8]: [c_custkey#X, c_name#X, c_address#X, c_phone#X, c_acctbal#X, c_comment#X, n_name#X, CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2)))), DecimalType(26,4)) AS _pre_X#X]
 Input [11]: [c_custkey#X, c_name#X, c_address#X, c_nationkey#X, c_phone#X, c_acctbal#X, c_comment#X, l_extendedprice#X, l_discount#X, n_nationkey#X, n_name#X]
 
 (55) FlushableHashAggregateExecTransformer
-Input [10]: [c_custkey#X, c_name#X, c_address#X, c_phone#X, c_acctbal#X, c_comment#X, l_extendedprice#X, l_discount#X, n_name#X, _pre_X#X]
+Input [8]: [c_custkey#X, c_name#X, c_address#X, c_phone#X, c_acctbal#X, c_comment#X, n_name#X, _pre_X#X]
 Keys [7]: [c_custkey#X, c_name#X, c_acctbal#X, c_phone#X, n_name#X, c_address#X, c_comment#X]
 Functions [1]: [partial_sum(_pre_X#X)]
 Aggregate Attributes [2]: [sum#X, isEmpty#X]
@@ -359,7 +359,7 @@ Arguments: false
 Input [8]: [c_custkey#X, c_name#X, revenue#X, c_acctbal#X, n_name#X, c_address#X, c_phone#X, c_comment#X]
 Arguments: X, [revenue#X DESC NULLS LAST], [c_custkey#X, c_name#X, revenue#X, c_acctbal#X, n_name#X, c_address#X, c_phone#X, c_comment#X], 0
 
-(67) VeloxColumnarToRowExec
+(67) VeloxColumnarToRow
 Input [8]: [c_custkey#X, c_name#X, revenue#X, c_acctbal#X, n_name#X, c_address#X, c_phone#X, c_comment#X]
 
 (68) Scan parquet

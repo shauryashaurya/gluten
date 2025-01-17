@@ -55,6 +55,25 @@ object ExpressionConverter extends SQLConfHelper with Logging {
     replaceWithExpressionTransformer0(expr, attributeSeq, expressionsMap)
   }
 
+  def canReplaceWithExpressionTransformer(
+      expr: Expression,
+      attributeSeq: Seq[Attribute]): Boolean = {
+    try {
+      replaceWithExpressionTransformer(expr, attributeSeq)
+      true
+    } catch {
+      case e: Exception =>
+        logInfo(e.getMessage)
+        false
+    }
+  }
+
+  def replaceAttributeReference(expr: Expression): Expression = expr match {
+    case ar: AttributeReference if ar.dataType == BooleanType =>
+      EqualNullSafe(ar, Literal.TrueLiteral)
+    case e => e
+  }
+
   private def replacePythonUDFWithExpressionTransformer(
       udf: PythonUDF,
       attributeSeq: Seq[Attribute],
@@ -446,7 +465,12 @@ object ExpressionConverter extends SQLConfHelper with Logging {
             LiteralTransformer(m.nullOnOverflow)),
           m
         )
-      case _: NormalizeNaNAndZero | _: PromotePrecision | _: TaggingExpression =>
+      case PromotePrecision(_ @Cast(child, _: DecimalType, _, _))
+          if child.dataType
+            .isInstanceOf[DecimalType] && !BackendsApiManager.getSettings.transformCheckOverflow =>
+        replaceWithExpressionTransformer0(child, attributeSeq, expressionsMap)
+      case _: NormalizeNaNAndZero | _: PromotePrecision | _: TaggingExpression |
+          _: DynamicPruningExpression =>
         ChildTransformer(
           substraitExprName,
           replaceWithExpressionTransformer0(expr.children.head, attributeSeq, expressionsMap),
@@ -466,21 +490,21 @@ object ExpressionConverter extends SQLConfHelper with Logging {
           if !BackendsApiManager.getSettings.transformCheckOverflow &&
             DecimalArithmeticUtil.isDecimalArithmetic(b) =>
         DecimalArithmeticUtil.checkAllowDecimalArithmetic()
-        val leftChild =
+        val arithmeticExprName = getAndCheckSubstraitName(b, expressionsMap)
+        val left =
           replaceWithExpressionTransformer0(b.left, attributeSeq, expressionsMap)
-        val rightChild =
+        val right =
           replaceWithExpressionTransformer0(b.right, attributeSeq, expressionsMap)
-        DecimalArithmeticExpressionTransformer(
-          getAndCheckSubstraitName(b, expressionsMap),
-          leftChild,
-          rightChild,
-          decimalType,
-          b)
+        DecimalArithmeticExpressionTransformer(arithmeticExprName, left, right, decimalType, b)
       case c: CheckOverflow =>
         CheckOverflowTransformer(
           substraitExprName,
           replaceWithExpressionTransformer0(c.child, attributeSeq, expressionsMap),
           c)
+      case c if c.getClass.getSimpleName.equals("CheckOverflowInTableInsert") =>
+        throw new GlutenNotSupportException(
+          "CheckOverflowInTableInsert is used in ANSI mode, but Gluten does not support ANSI mode."
+        )
       case b: BinaryArithmetic if DecimalArithmeticUtil.isDecimalArithmetic(b) =>
         DecimalArithmeticUtil.checkAllowDecimalArithmetic()
         if (!BackendsApiManager.getSettings.transformCheckOverflow) {
@@ -500,6 +524,12 @@ object ExpressionConverter extends SQLConfHelper with Logging {
           replaceWithExpressionTransformer0(n.left, attributeSeq, expressionsMap),
           replaceWithExpressionTransformer0(n.right, attributeSeq, expressionsMap),
           n
+        )
+      case a: AtLeastNNonNulls =>
+        BackendsApiManager.getSparkPlanExecApiInstance.genAtLeastNNonNullsTransformer(
+          substraitExprName,
+          a.children.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap)),
+          a
         )
       case m: MakeTimestamp =>
         BackendsApiManager.getSparkPlanExecApiInstance.genMakeTimestampTransformer(
@@ -633,6 +663,14 @@ object ExpressionConverter extends SQLConfHelper with Logging {
           replaceWithExpressionTransformer0(a.function, attributeSeq, expressionsMap),
           a
         )
+      case arrayInsert if arrayInsert.getClass.getSimpleName.equals("ArrayInsert") =>
+        // Since spark 3.4.0
+        val children = SparkShimLoader.getSparkShims.extractExpressionArrayInsert(arrayInsert)
+        GenericExpressionTransformer(
+          substraitExprName,
+          children.map(replaceWithExpressionTransformer0(_, attributeSeq, expressionsMap)),
+          arrayInsert
+        )
       case s: Shuffle =>
         GenericExpressionTransformer(
           substraitExprName,
@@ -680,6 +718,14 @@ object ExpressionConverter extends SQLConfHelper with Logging {
           substraitExprName,
           timeAdd.children,
           timeAdd
+        )
+      case ss: StringSplit =>
+        BackendsApiManager.getSparkPlanExecApiInstance.genStringSplitTransformer(
+          substraitExprName,
+          replaceWithExpressionTransformer0(ss.str, attributeSeq, expressionsMap),
+          replaceWithExpressionTransformer0(ss.regex, attributeSeq, expressionsMap),
+          replaceWithExpressionTransformer0(ss.limit, attributeSeq, expressionsMap),
+          ss
         )
       case expr =>
         GenericExpressionTransformer(

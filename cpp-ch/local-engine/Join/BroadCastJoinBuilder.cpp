@@ -19,7 +19,7 @@
 #include <Compression/CompressedReadBuffer.h>
 #include <Interpreters/TableJoin.h>
 #include <Join/StorageJoinFromReadBuffer.h>
-#include <Parser/JoinRelParser.h>
+#include <Parser/RelParsers/JoinRelParser.h>
 #include <Parser/TypeParser.h>
 #include <QueryPipeline/ProfileInfo.h>
 #include <Shuffle/ShuffleReader.h>
@@ -42,6 +42,7 @@ namespace local_engine
 {
 namespace BroadCastJoinBuilder
 {
+using namespace DB;
 static jclass Java_CHBroadcastBuildSideCache = nullptr;
 static jmethodID Java_get = nullptr;
 jlong callJavaGet(const std::string & id)
@@ -116,7 +117,8 @@ std::shared_ptr<StorageJoinFromReadBuffer> buildJoin(
     bool has_mixed_join_condition,
     bool is_existence_join,
     const std::string & named_struct,
-    bool is_null_aware_anti_join)
+    bool is_null_aware_anti_join,
+    bool has_null_key_values)
 {
     auto join_key_list = Poco::StringTokenizer(join_keys, ",");
     Names key_names;
@@ -140,21 +142,14 @@ std::shared_ptr<StorageJoinFromReadBuffer> buildJoin(
     Blocks data;
     auto collect_data = [&]
     {
-        bool header_empty = header.getNamesAndTypesList().empty();
-        bool only_one_column = header_empty;
+        bool only_one_column = header.getNamesAndTypesList().empty();
+        if (only_one_column)
+            header = BlockUtil::buildRowCountBlock(0).getColumnsWithTypeAndName();
+
         NativeReader block_stream(input);
         ProfileInfo info;
         while (Block block = block_stream.read())
         {
-            if (header_empty)
-            {
-                // In bnlj, buidside output maybe empty,
-                //   we use buildside header only for loop
-                // Like: select count(*) from t1 left join t2
-                header = resetBuildTableBlockName(block, true);
-                header_empty = false;
-            }
-
             DB::ColumnsWithTypeAndName columns;
             for (size_t i = 0; i < block.columns(); ++i)
             {
@@ -193,7 +188,8 @@ std::shared_ptr<StorageJoinFromReadBuffer> buildJoin(
         ConstraintsDescription(),
         key,
         true,
-        is_null_aware_anti_join);
+        is_null_aware_anti_join,
+        has_null_key_values);
 }
 
 void init(JNIEnv * env)

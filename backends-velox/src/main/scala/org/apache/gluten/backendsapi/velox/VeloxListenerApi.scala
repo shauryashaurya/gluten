@@ -16,20 +16,27 @@
  */
 package org.apache.gluten.backendsapi.velox
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.ListenerApi
-import org.apache.gluten.execution.datasource.{GlutenOrcWriterInjects, GlutenParquetWriterInjects, GlutenRowSplitter}
+import org.apache.gluten.columnarbatch.ArrowBatches.{ArrowJavaBatch, ArrowNativeBatch}
+import org.apache.gluten.columnarbatch.VeloxBatch
+import org.apache.gluten.config.GlutenConfig
+import org.apache.gluten.execution.datasource.GlutenFormatFactory
 import org.apache.gluten.expression.UDFMappings
+import org.apache.gluten.extension.columnar.transition.Convention
 import org.apache.gluten.init.NativeBackendInitializer
 import org.apache.gluten.jni.{JniLibLoader, JniWorkspace}
 import org.apache.gluten.udf.UdfJniWrapper
 import org.apache.gluten.utils._
 
-import org.apache.spark.{SparkConf, SparkContext}
+import org.apache.spark.{HdfsConfGenerator, ShuffleDependency, SparkConf, SparkContext}
 import org.apache.spark.api.plugin.PluginContext
 import org.apache.spark.internal.Logging
 import org.apache.spark.network.util.ByteUnit
-import org.apache.spark.sql.execution.datasources.velox.{VeloxOrcWriterInjects, VeloxParquetWriterInjects, VeloxRowSplitter}
+import org.apache.spark.shuffle.{ColumnarShuffleDependency, LookupKey, ShuffleManagerRegistry}
+import org.apache.spark.shuffle.sort.ColumnarShuffleManager
+import org.apache.spark.sql.execution.ColumnarCachedBatchSerializer
+import org.apache.spark.sql.execution.datasources.GlutenWriterColumnarRules
+import org.apache.spark.sql.execution.datasources.velox.{VeloxParquetWriterInjects, VeloxRowSplitter}
 import org.apache.spark.sql.expression.UDFResolver
 import org.apache.spark.sql.internal.{GlutenConfigUtil, StaticSQLConf}
 import org.apache.spark.util.{SparkDirectoryUtil, SparkResourceUtil}
@@ -44,22 +51,28 @@ class VeloxListenerApi extends ListenerApi with Logging {
   override def onDriverStart(sc: SparkContext, pc: PluginContext): Unit = {
     val conf = pc.conf()
 
+    // Generate HDFS client configurations.
+    HdfsConfGenerator.addHdfsClientToSparkWorkDirectory(sc)
+
     // Overhead memory limits.
     val offHeapSize = conf.getSizeAsBytes(GlutenConfig.SPARK_OFFHEAP_SIZE_KEY)
-    val desiredOverheadSize = (0.1 * offHeapSize).toLong.max(ByteUnit.MiB.toBytes(384))
+    val desiredOverheadSize = (0.3 * offHeapSize).toLong.max(ByteUnit.MiB.toBytes(384))
     if (!SparkResourceUtil.isMemoryOverheadSet(conf)) {
       // If memory overhead is not set by user, automatically set it according to off-heap settings.
       logInfo(
         s"Memory overhead is not set. Setting it to $desiredOverheadSize automatically." +
           " Gluten doesn't follow Spark's calculation on default value of this option because the" +
           " actual required memory overhead will depend on off-heap usage than on on-heap usage.")
-      conf.set(GlutenConfig.SPARK_OVERHEAD_SIZE_KEY, desiredOverheadSize.toString)
+      conf.set(
+        GlutenConfig.SPARK_OVERHEAD_SIZE_KEY,
+        ByteUnit.BYTE.toMiB(desiredOverheadSize).toString)
     }
     val overheadSize: Long = SparkResourceUtil.getMemoryOverheadSize(conf)
-    if (overheadSize < desiredOverheadSize) {
+    if (ByteUnit.BYTE.toMiB(overheadSize) < ByteUnit.BYTE.toMiB(desiredOverheadSize)) {
       logWarning(
-        s"Memory overhead is set to $overheadSize which is smaller than the recommended size" +
-          s" $desiredOverheadSize. This may cause OOM.")
+        s"Memory overhead is set to ${ByteUnit.BYTE.toMiB(overheadSize)}MiB which is smaller than" +
+          s" the recommended size ${ByteUnit.BYTE.toMiB(desiredOverheadSize)}MiB." +
+          s" This may cause OOM.")
     }
     conf.set(GlutenConfig.GLUTEN_OVERHEAD_SIZE_IN_BYTES_KEY, overheadSize.toString)
 
@@ -67,7 +80,7 @@ class VeloxListenerApi extends ListenerApi with Logging {
     if (conf.getBoolean(GlutenConfig.COLUMNAR_TABLE_CACHE_ENABLED.key, defaultValue = false)) {
       conf.set(
         StaticSQLConf.SPARK_CACHE_SERIALIZER.key,
-        "org.apache.spark.sql.execution.ColumnarCachedBatchSerializer")
+        classOf[ColumnarCachedBatchSerializer].getName)
     }
 
     // Static initializers for driver.
@@ -81,7 +94,7 @@ class VeloxListenerApi extends ListenerApi with Logging {
 
     SparkDirectoryUtil.init(conf)
     UDFResolver.resolveUdfConf(conf, isDriver = true)
-    initialize(conf)
+    initialize(conf, isDriver = true)
     UdfJniWrapper.registerFunctionSignatures()
   }
 
@@ -108,12 +121,32 @@ class VeloxListenerApi extends ListenerApi with Logging {
 
     SparkDirectoryUtil.init(conf)
     UDFResolver.resolveUdfConf(conf, isDriver = false)
-    initialize(conf)
+    initialize(conf, isDriver = false)
   }
 
   override def onExecutorShutdown(): Unit = shutdown()
 
-  private def initialize(conf: SparkConf): Unit = {
+  private def initialize(conf: SparkConf, isDriver: Boolean): Unit = {
+    // Do row / batch type initializations.
+    Convention.ensureSparkRowAndBatchTypesRegistered()
+    ArrowJavaBatch.ensureRegistered()
+    ArrowNativeBatch.ensureRegistered()
+    VeloxBatch.ensureRegistered()
+
+    // Register columnar shuffle so can be considered when
+    // `org.apache.spark.shuffle.GlutenShuffleManager` is set as Spark shuffle manager.
+    ShuffleManagerRegistry
+      .get()
+      .register(
+        new LookupKey {
+          override def accepts[K, V, C](dependency: ShuffleDependency[K, V, C]): Boolean = {
+            dependency.getClass == classOf[ColumnarShuffleDependency[_, _, _]]
+          }
+        },
+        classOf[ColumnarShuffleManager].getName
+      )
+
+    // Sets this configuration only once, since not undoable.
     if (conf.getBoolean(GlutenConfig.GLUTEN_DEBUG_KEEP_JNI_WORKSPACE, defaultValue = false)) {
       val debugDir = conf.get(GlutenConfig.GLUTEN_DEBUG_KEEP_JNI_WORKSPACE_DIR)
       JniWorkspace.enableDebug(debugDir)
@@ -143,13 +176,19 @@ class VeloxListenerApi extends ListenerApi with Logging {
     }
 
     // Initial native backend with configurations.
-    val parsed = GlutenConfigUtil.parseConfig(conf.getAll.toMap)
-    NativeBackendInitializer.initializeBackend(parsed)
+    var parsed = GlutenConfigUtil.parseConfig(conf.getAll.toMap)
+
+    // Workaround for https://github.com/apache/incubator-gluten/issues/7837
+    if (isDriver && !inLocalMode(conf)) {
+      parsed += (GlutenConfig.COLUMNAR_VELOX_CACHE_ENABLED.key -> "false")
+    }
+    NativeBackendInitializer.forBackend(VeloxBackend.BACKEND_NAME).initialize(parsed)
 
     // Inject backend-specific implementations to override spark classes.
-    GlutenParquetWriterInjects.setInstance(new VeloxParquetWriterInjects())
-    GlutenOrcWriterInjects.setInstance(new VeloxOrcWriterInjects())
-    GlutenRowSplitter.setInstance(new VeloxRowSplitter())
+    GlutenFormatFactory.register(new VeloxParquetWriterInjects)
+    GlutenFormatFactory.injectPostRuleFactory(
+      session => GlutenWriterColumnarRules.NativeWritePostRule(session))
+    GlutenFormatFactory.register(new VeloxRowSplitter())
   }
 
   private def shutdown(): Unit = {

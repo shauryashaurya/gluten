@@ -17,7 +17,7 @@
 set -exu
 
 VELOX_REPO=https://github.com/oap-project/velox.git
-VELOX_BRANCH=2024_09_06
+VELOX_BRANCH=2025_01_17
 VELOX_HOME=""
 
 OS=`uname -s`
@@ -79,10 +79,6 @@ function process_setup_ubuntu {
   sed -i '/ccache/a\    uuid-dev \\' scripts/setup-ubuntu.sh
   ensure_pattern_matched 'libgmock-dev' scripts/setup-ubuntu.sh
   sed -i '/libgmock-dev/d' scripts/setup-ubuntu.sh # resolved by ep/build-velox/build/velox_ep/CMake/resolve_dependency_modules/gtest.cmake
-  ensure_pattern_matched 'function install_folly' scripts/setup-ubuntu.sh
-  sed -i '/^function install_folly.*/i function install_protobuf {\n  wget_and_untar https://github.com/protocolbuffers/protobuf/releases/download/v21.4/protobuf-all-21.4.tar.gz protobuf\n  (\n    cd protobuf\n    ./configure  CXXFLAGS="-fPIC"  --prefix=/usr/local\n    make "-j$(nproc)"\n    sudo make install\n    sudo ldconfig\n  )\n}\n' scripts/setup-ubuntu.sh
-  ensure_pattern_matched '  run_and_time install_folly' scripts/setup-ubuntu.sh
-  sed -i '/^  run_and_time install_folly/a \ \ run_and_time install_protobuf' scripts/setup-ubuntu.sh
   # Required by lib hdfs.
   ensure_pattern_matched 'ccache ' scripts/setup-ubuntu.sh
   sed -i '/ccache /a\    yasm \\' scripts/setup-ubuntu.sh
@@ -107,11 +103,10 @@ function process_setup_centos9 {
   sed -i '/^.*dnf_install autoconf/a\  dnf_install libxml2-devel libgsasl-devel libuuid-devel' scripts/setup-centos9.sh
   
   ensure_pattern_matched 'install_gflags' scripts/setup-centos9.sh
-  sed -i '/^function install_gflags.*/i function install_openssl {\n  wget_and_untar https://github.com/openssl/openssl/archive/refs/tags/OpenSSL_1_1_1s.tar.gz openssl \n  cd openssl \n  ./config no-shared && make depend && make && sudo make install \n  cd ..\n}\n'     scripts/setup-centos9.sh
+  sed -i '/^function install_gflags.*/i function install_openssl {\n  wget_and_untar https://github.com/openssl/openssl/releases/download/openssl-3.2.2/openssl-3.2.2.tar.gz openssl \n ( cd ${DEPENDENCY_DIR}/openssl \n  ./config no-shared && make depend && make && sudo make install ) \n}\n'     scripts/setup-centos9.sh
 
   ensure_pattern_matched 'install_fbthrift' scripts/setup-centos9.sh
   sed -i '/^  run_and_time install_fbthrift/a \  run_and_time install_openssl' scripts/setup-centos9.sh
-  sed -i '/cd protobuf/{n;s/\.\/configure --prefix=\/usr/\.\/configure CXXFLAGS="-fPIC" --prefix=\/usr\/local/;}' scripts/setup-centos9.sh
 
   # Required by lib hdfs.
   ensure_pattern_matched 'dnf_install ninja-build' scripts/setup-centos9.sh
@@ -123,19 +118,19 @@ function process_setup_centos9 {
 }
 
 function process_setup_alinux3 {
-  sed -i "s/.*dnf_install epel-release/#&/" ${CURRENT_DIR}/setup-centos8.sh
-  sed -i "s/.*run_and_time install_conda/#&/" ${CURRENT_DIR}/setup-centos8.sh
-  sed -i "s/.*dnf config-manager --set-enabled powertools/#&/" ${CURRENT_DIR}/setup-centos8.sh
-  sed -i "s/gcc-toolset-9 //" ${CURRENT_DIR}/setup-centos8.sh
-  sed -i "s/.*source \/opt\/rh\/gcc-toolset-9\/enable/#&/" ${CURRENT_DIR}/setup-centos8.sh
-  sed -i 's|^export CC=/opt/rh/gcc-toolset-9/root/bin/gcc|# &|' ${CURRENT_DIR}/setup-centos8.sh
-  sed -i 's|^export CXX=/opt/rh/gcc-toolset-9/root/bin/g++|# &|' ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*dnf_install epel-release/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*run_and_time install_conda/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*dnf config-manager --set-enabled powertools/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "s/gcc-toolset-11 //" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*source \/opt\/rh\/gcc-toolset-11\/enable/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s|^export CC=/opt/rh/gcc-toolset-11/root/bin/gcc|# &|" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s|^export CXX=/opt/rh/gcc-toolset-11/root/bin/g++|# &|" ${CURRENT_DIR}/setup-centos8.sh
   sed -i 's/python39 python39-devel python39-pip //g' ${CURRENT_DIR}/setup-centos8.sh
-  sed -i "s/.*pip.* install/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*pip.* install/#&/" ${CURRENT_DIR}/setup-centos8.sh
 }
 
 function process_setup_tencentos32 {
-  sed -i "s/.*dnf config-manager --set-enabled powertools/#&/" ${CURRENT_DIR}/setup-centos8.sh
+  sed -i "/^[[:space:]]*#/!s/.*dnf config-manager --set-enabled powertools/#&/" ${CURRENT_DIR}/setup-centos8.sh
 }
 
 echo "Preparing Velox source code..."
@@ -174,28 +169,20 @@ git submodule update --init --recursive
 function apply_compilation_fixes {
   current_dir=$1
   velox_home=$2
-  sudo cp ${current_dir}/modify_velox.patch ${velox_home}/
+
   sudo cp ${current_dir}/modify_arrow.patch ${velox_home}/CMake/resolve_dependency_modules/arrow/
   sudo cp ${current_dir}/modify_arrow_dataset_scan_option.patch ${velox_home}/CMake/resolve_dependency_modules/arrow/
-  git add ${velox_home}/modify_velox.patch # to avoid the file from being deleted by git clean -dffx :/
+
   git add ${velox_home}/CMake/resolve_dependency_modules/arrow/modify_arrow.patch # to avoid the file from being deleted by git clean -dffx :/
   git add ${velox_home}/CMake/resolve_dependency_modules/arrow/modify_arrow_dataset_scan_option.patch # to avoid the file from being deleted by git clean -dffx :/
-  cd ${velox_home}
-  echo "Applying patch to Velox source code..."
-  git apply modify_velox.patch
-  if [ $? -ne 0 ]; then
-    echo "Failed to apply compilation fixes to Velox: $?."
-    exit 1
-  fi
+
 }
 
 function setup_linux {
   local LINUX_DISTRIBUTION=$(. /etc/os-release && echo ${ID})
   local LINUX_VERSION_ID=$(. /etc/os-release && echo ${VERSION_ID})
 
-  # apply patches
-  sed -i 's/-mavx2 -mfma -mavx -mf16c -mlzcnt -std=c++17/-march=native -std=c++17 -mno-avx512f/g' scripts/setup-helper-functions.sh
-  sed -i 's/SUDO="${SUDO:-""}"/SUDO="${SUDO:-"sudo --preserve-env"}"/g' scripts/setup-helper-functions.sh
+  export SUDO="sudo --preserve-env"
   if [[ "$LINUX_DISTRIBUTION" == "ubuntu" || "$LINUX_DISTRIBUTION" == "debian" || "$LINUX_DISTRIBUTION" == "pop" ]]; then
     process_setup_ubuntu
   elif [[ "$LINUX_DISTRIBUTION" == "centos" ]]; then

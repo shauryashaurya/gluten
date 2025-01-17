@@ -16,12 +16,11 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.expression._
 import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.metrics.MetricsUpdater
-import org.apache.gluten.substrait.`type`.TypeBuilder
 import org.apache.gluten.substrait.SubstraitContext
 import org.apache.gluten.substrait.expression.WindowFunctionNode
 import org.apache.gluten.substrait.extensions.ExtensionBuilder
@@ -51,8 +50,13 @@ case class WindowExecTransformer(
   @transient override lazy val metrics =
     BackendsApiManager.getMetricsApiInstance.genWindowTransformerMetrics(sparkContext)
 
-  override def metricsUpdater(): MetricsUpdater =
+  override def isNoop: Boolean = windowExpression == null || windowExpression.isEmpty
+
+  override def metricsUpdater(): MetricsUpdater = if (isNoop) {
+    MetricsUpdater.None
+  } else {
     BackendsApiManager.getMetricsApiInstance.genWindowTransformerMetricsUpdater(metrics)
+  }
 
   override def output: Seq[Attribute] = child.output ++ windowExpression.map(_.toAttribute)
 
@@ -83,7 +87,7 @@ case class WindowExecTransformer(
     val windowParametersStr = new StringBuffer("WindowParameters:")
     // isStreaming: 1 for streaming, 0 for sort
     val isStreaming: Int =
-      if (GlutenConfig.getConf.veloxColumnarWindowType.equals("streaming")) 1 else 0
+      if (GlutenConfig.get.veloxColumnarWindowType.equals("streaming")) 1 else 0
 
     windowParametersStr
       .append("isStreaming=")
@@ -143,20 +147,12 @@ case class WindowExecTransformer(
         context,
         operatorId)
     } else {
-      // Use a extension node to send the input types through Substrait plan for validation.
-      val inputTypeNodeList = originalInputAttributes
-        .map(attr => ConverterUtils.getTypeNode(attr.dataType, attr.nullable))
-        .asJava
-      val extensionNode = ExtensionBuilder.makeAdvancedExtension(
-        BackendsApiManager.getTransformerApiInstance.packPBMessage(
-          TypeBuilder.makeStruct(false, inputTypeNodeList).toProtobuf))
-
       RelBuilder.makeWindowRel(
         input,
         windowExpressions,
         partitionsExpressions,
         sortFieldList,
-        extensionNode,
+        RelBuilder.createExtensionNode(originalInputAttributes.asJava),
         context,
         operatorId)
     }
@@ -177,17 +173,16 @@ case class WindowExecTransformer(
 
   override protected def doTransform(context: SubstraitContext): TransformContext = {
     val childCtx = child.asInstanceOf[TransformSupport].transform(context)
-    val operatorId = context.nextOperatorId(this.nodeName)
-    if (windowExpression == null || windowExpression.isEmpty) {
+    if (isNoop) {
       // The computing for this operator is not needed.
-      context.registerEmptyRelToOperator(operatorId)
       return childCtx
     }
 
+    val operatorId = context.nextOperatorId(this.nodeName)
     val currRel =
       getWindowRel(context, child.output, operatorId, childCtx.root, validation = false)
     assert(currRel != null, "Window Rel should be valid")
-    TransformContext(childCtx.outputAttributes, output, currRel)
+    TransformContext(output, currRel)
   }
 
   override protected def withNewChildInternal(newChild: SparkPlan): WindowExecTransformer =

@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (35)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (23)
+   VeloxColumnarToRow (23)
    +- ^ ProjectExecTransformer (21)
       +- ^ RegularHashAggregateExecTransformer (20)
          +- ^ InputIteratorTransformer (19)
@@ -13,12 +13,12 @@ AdaptiveSparkPlan (35)
                            +- ^ BroadcastHashJoinExecTransformer Inner BuildRight (11)
                               :- ^ ProjectExecTransformer (3)
                               :  +- ^ FilterExecTransformer (2)
-                              :     +- ^ Scan parquet (1)
+                              :     +- ^ ScanTransformer parquet  (1)
                               +- ^ InputIteratorTransformer (10)
                                  +- BroadcastQueryStage (8), Statistics(X)
                                     +- ColumnarBroadcastExchange (7)
                                        +- ^ FilterExecTransformer (5)
-                                          +- ^ Scan parquet (4)
+                                          +- ^ ScanTransformer parquet  (4)
 +- == Initial Plan ==
    HashAggregate (34)
    +- Exchange (33)
@@ -33,7 +33,7 @@ AdaptiveSparkPlan (35)
                      +- Scan parquet (27)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [4]: [l_partkey#X, l_extendedprice#X, l_discount#X, l_shipdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -48,7 +48,7 @@ Arguments: (((isnotnull(l_shipdate#X) AND (l_shipdate#X >= 1995-09-01)) AND (l_s
 Output [3]: [l_partkey#X, l_extendedprice#X, l_discount#X]
 Input [4]: [l_partkey#X, l_extendedprice#X, l_discount#X, l_shipdate#X]
 
-(4) Scan parquet
+(4) ScanTransformer parquet 
 Output [2]: [p_partkey#X, p_type#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -84,11 +84,11 @@ Join type: Inner
 Join condition: None
 
 (12) ProjectExecTransformer
-Output [5]: [l_extendedprice#X, l_discount#X, p_type#X, CASE WHEN StartsWith(p_type#X, PROMO) THEN (l_extendedprice#X * (1 - l_discount#X)) ELSE 0.0000 END AS _pre_X#X, (l_extendedprice#X * (1 - l_discount#X)) AS _pre_X#X]
+Output [2]: [CASE WHEN StartsWith(p_type#X, PROMO) THEN (l_extendedprice#X * (1 - l_discount#X)) ELSE 0.0000 END AS _pre_X#X, (l_extendedprice#X * (1 - l_discount#X)) AS _pre_X#X]
 Input [5]: [l_partkey#X, l_extendedprice#X, l_discount#X, p_partkey#X, p_type#X]
 
 (13) FlushableHashAggregateExecTransformer
-Input [5]: [l_extendedprice#X, l_discount#X, p_type#X, _pre_X#X, _pre_X#X]
+Input [2]: [_pre_X#X, _pre_X#X]
 Keys: []
 Functions [2]: [partial_sum(_pre_X#X), partial_sum(_pre_X#X)]
 Aggregate Attributes [4]: [sum#X, isEmpty#X, sum#X, isEmpty#X]
@@ -131,7 +131,7 @@ Input [2]: [sum(CASE WHEN StartsWith(p_type#X, PROMO) THEN (l_extendedprice#X * 
 Input [1]: [promo_revenue#X]
 Arguments: false
 
-(23) VeloxColumnarToRowExec
+(23) VeloxColumnarToRow
 Input [1]: [promo_revenue#X]
 
 (24) Scan parquet

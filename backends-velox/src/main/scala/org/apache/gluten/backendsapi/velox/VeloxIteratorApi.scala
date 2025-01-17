@@ -16,11 +16,11 @@
  */
 package org.apache.gluten.backendsapi.velox
 
-import org.apache.gluten.GlutenNumaBindingInfo
-import org.apache.gluten.backendsapi.IteratorApi
+import org.apache.gluten.backendsapi.{BackendsApiManager, IteratorApi}
+import org.apache.gluten.config.GlutenNumaBindingInfo
 import org.apache.gluten.execution._
 import org.apache.gluten.iterator.Iterators
-import org.apache.gluten.metrics.IMetrics
+import org.apache.gluten.metrics.{IMetrics, IteratorMetricsJniWrapper}
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.plan.PlanNode
 import org.apache.gluten.substrait.rel.{LocalFilesBuilder, LocalFilesNode, SplitInfo}
@@ -39,12 +39,12 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.types._
 import org.apache.spark.sql.utils.SparkInputMetricsUtil.InputMetricsWrapper
 import org.apache.spark.sql.vectorized.ColumnarBatch
-import org.apache.spark.util.ExecutorManager
+import org.apache.spark.util.{ExecutorManager, SparkDirectoryUtil}
 
 import java.lang.{Long => JLong}
 import java.nio.charset.StandardCharsets
 import java.time.ZoneOffset
-import java.util.{ArrayList => JArrayList, HashMap => JHashMap, Map => JMap}
+import java.util.{ArrayList => JArrayList, HashMap => JHashMap, Map => JMap, UUID}
 
 import scala.collection.JavaConverters._
 
@@ -165,8 +165,7 @@ class VeloxIteratorApi extends IteratorApi with Logging {
   }
 
   override def injectWriteFilesTempPath(path: String, fileName: String): Unit = {
-    val transKernel = NativePlanEvaluator.create()
-    transKernel.injectWriteFilesTempPath(path)
+    NativePlanEvaluator.injectWriteFilesTempPath(path)
   }
 
   /** Generate Iterator[ColumnarBatch] for first stage. */
@@ -183,26 +182,34 @@ class VeloxIteratorApi extends IteratorApi with Logging {
       "Velox backend only accept GlutenPartition.")
 
     val columnarNativeIterators =
-      new JArrayList[GeneralInIterator](inputIterators.map {
-        iter => new ColumnarBatchInIterator(iter.asJava)
+      new JArrayList[ColumnarBatchInIterator](inputIterators.map {
+        iter => new ColumnarBatchInIterator(BackendsApiManager.getBackendName, iter.asJava)
       }.asJava)
-    val transKernel = NativePlanEvaluator.create()
+    val transKernel = NativePlanEvaluator.create(BackendsApiManager.getBackendName)
 
     val splitInfoByteArray = inputPartition
       .asInstanceOf[GlutenPartition]
       .splitInfosByteArray
-    val resIter: GeneralOutIterator =
+    val spillDirPath = SparkDirectoryUtil
+      .get()
+      .namespace("gluten-spill")
+      .mkChildDirRoundRobin(UUID.randomUUID.toString)
+      .getAbsolutePath
+    val resIter: ColumnarBatchOutIterator =
       transKernel.createKernelWithBatchIterator(
         inputPartition.plan,
         splitInfoByteArray,
         columnarNativeIterators,
-        partitionIndex)
+        partitionIndex,
+        BackendsApiManager.getSparkPlanExecApiInstance.rewriteSpillPath(spillDirPath)
+      )
+    val itrMetrics = IteratorMetricsJniWrapper.create()
 
     Iterators
       .wrap(resIter.asScala)
       .protectInvocationFlow()
       .recycleIterator {
-        updateNativeMetrics(resIter.getMetrics)
+        updateNativeMetrics(itrMetrics.fetch(resIter))
         updateInputMetrics(TaskContext.get().taskMetrics().inputMetrics)
         resIter.close()
       }
@@ -228,25 +235,32 @@ class VeloxIteratorApi extends IteratorApi with Logging {
 
     ExecutorManager.tryTaskSet(numaBindingInfo)
 
-    val transKernel = NativePlanEvaluator.create()
+    val transKernel = NativePlanEvaluator.create(BackendsApiManager.getBackendName)
     val columnarNativeIterator =
-      new JArrayList[GeneralInIterator](inputIterators.map {
-        iter => new ColumnarBatchInIterator(iter.asJava)
+      new JArrayList[ColumnarBatchInIterator](inputIterators.map {
+        iter => new ColumnarBatchInIterator(BackendsApiManager.getBackendName, iter.asJava)
       }.asJava)
+    val spillDirPath = SparkDirectoryUtil
+      .get()
+      .namespace("gluten-spill")
+      .mkChildDirRoundRobin(UUID.randomUUID.toString)
+      .getAbsolutePath
     val nativeResultIterator =
       transKernel.createKernelWithBatchIterator(
         rootNode.toProtobuf.toByteArray,
         // Final iterator does not contain scan split, so pass empty split info to native here.
         new Array[Array[Byte]](0),
         columnarNativeIterator,
-        partitionIndex
+        partitionIndex,
+        BackendsApiManager.getSparkPlanExecApiInstance.rewriteSpillPath(spillDirPath)
       )
+    val itrMetrics = IteratorMetricsJniWrapper.create()
 
     Iterators
       .wrap(nativeResultIterator.asScala)
       .protectInvocationFlow()
       .recycleIterator {
-        updateNativeMetrics(nativeResultIterator.getMetrics)
+        updateNativeMetrics(itrMetrics.fetch(nativeResultIterator))
         nativeResultIterator.close()
       }
       .recyclePayload(batch => batch.close())

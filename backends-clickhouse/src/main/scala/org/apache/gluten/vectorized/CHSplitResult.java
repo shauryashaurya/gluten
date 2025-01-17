@@ -16,10 +16,21 @@
  */
 package org.apache.gluten.vectorized;
 
-public class CHSplitResult extends SplitResult {
+public class CHSplitResult {
+    private final long totalComputePidTime;
+    private final long totalWriteTime;
+    private final long totalEvictTime;
+    private final long totalCompressTime; // overlaps with totalEvictTime and totalWriteTime
+    private final long totalBytesWritten;
+    private final long totalBytesEvicted;
+    private final long[] partitionLengths;
+    private final long[] rawPartitionLengths;
     private final long splitTime;
     private final long diskWriteTime;
     private final long serializationTime;
+    private final long totalRows;
+    private final long totalBatches;
+    private final long wallTime;
 
     public CHSplitResult(long totalComputePidTime,
                          long totalWriteTime,
@@ -31,18 +42,60 @@ public class CHSplitResult extends SplitResult {
                          long[] rawPartitionLengths,
                          long splitTime,
                          long diskWriteTime,
-                         long serializationTime) {
-        super(totalComputePidTime,
-                totalWriteTime,
-                totalEvictTime,
-                totalCompressTime,
-                totalBytesWritten,
-                totalBytesEvicted,
-                partitionLengths,
-                rawPartitionLengths);
+                         long serializationTime,
+                         long totalRows,
+                         long totalBatches,
+                         long wallTime) {
+        this.totalComputePidTime = totalComputePidTime;
+        this.totalWriteTime = totalWriteTime;
+        this.totalEvictTime = totalEvictTime;
+        this.totalCompressTime = totalCompressTime;
+        this.totalBytesWritten = totalBytesWritten;
+        this.totalBytesEvicted = totalBytesEvicted;
+        this.partitionLengths = partitionLengths;
+        this.rawPartitionLengths = rawPartitionLengths;
         this.splitTime = splitTime;
         this.diskWriteTime = diskWriteTime;
         this.serializationTime = serializationTime;
+        this.totalRows = totalRows;
+        this.totalBatches = totalBatches;
+        this.wallTime = wallTime;
+    }
+
+    public long getTotalComputePidTime() {
+        return totalComputePidTime;
+    }
+
+    public long getTotalWriteTime() {
+        return totalWriteTime;
+    }
+
+    public long getTotalSpillTime() {
+        return totalEvictTime;
+    }
+
+    public long getTotalCompressTime() {
+        return totalCompressTime;
+    }
+
+    public long getTotalBytesWritten() {
+        return totalBytesWritten;
+    }
+
+    public long getTotalBytesSpilled() {
+        return totalBytesEvicted;
+    }
+
+    public long getTotalPushTime() {
+        return totalEvictTime;
+    }
+
+    public long[] getPartitionLengths() {
+        return partitionLengths;
+    }
+
+    public long[] getRawPartitionLengths() {
+        return rawPartitionLengths;
     }
 
     public long getSplitTime() {
@@ -55,5 +108,17 @@ public class CHSplitResult extends SplitResult {
 
     public long getSerializationTime() {
         return serializationTime;
+    }
+
+    public long getTotalRows() {
+        return totalRows;
+    }
+
+    public long getTotalBatches() {
+        return totalBatches;
+    }
+
+    public long getWallTime() {
+        return wallTime;
     }
 }

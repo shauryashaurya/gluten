@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (52)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (37)
+   VeloxColumnarToRow (37)
    +- ^ SortExecTransformer (35)
       +- ^ InputIteratorTransformer (34)
          +- ShuffleQueryStage (32)
@@ -21,14 +21,14 @@ AdaptiveSparkPlan (52)
                                              :     +- ColumnarExchange (6)
                                              :        +- VeloxResizeBatches (5)
                                              :           +- ^ ProjectExecTransformer (3)
-                                             :              +- ^ NoopFilter (2)
-                                             :                 +- ^ Scan parquet (1)
+                                             :              +- ^ FilterExecTransformer (2)
+                                             :                 +- ^ ScanTransformer parquet  (1)
                                              +- ^ InputIteratorTransformer (17)
                                                 +- ShuffleQueryStage (15)
                                                    +- ColumnarExchange (14)
                                                       +- VeloxResizeBatches (13)
                                                          +- ^ ProjectExecTransformer (11)
-                                                            +- ^ Scan parquet (10)
+                                                            +- ^ ScanTransformer parquet  (10)
 +- == Initial Plan ==
    Sort (51)
    +- Exchange (50)
@@ -46,16 +46,16 @@ AdaptiveSparkPlan (52)
                            +- Scan parquet (42)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(c_acctbal)]
 ReadSchema: struct<c_custkey:bigint,c_phone:string,c_acctbal:decimal(12,2)>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
-Arguments: [c_custkey#X, c_phone#X, c_acctbal#X]
+Arguments: ((isnotnull(c_acctbal#X) AND substring(c_phone#X, 1, 2) IN (13,31,23,29,30,18,17)) AND (cast(c_acctbal#X as decimal(16,6)) > Subquery subquery#X, [id=#X]))
 
 (3) ProjectExecTransformer
 Output [4]: [hash(c_custkey#X, 42) AS hash_partition_key#X, c_custkey#X, c_phone#X, c_acctbal#X]
@@ -83,7 +83,7 @@ Input [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
 (9) InputIteratorTransformer
 Input [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
 
-(10) Scan parquet
+(10) ScanTransformer parquet 
 Output [1]: [o_custkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -194,7 +194,7 @@ Arguments: [cntrycode#X ASC NULLS FIRST], true, 0
 Input [3]: [cntrycode#X, numcust#X, totacctbal#X]
 Arguments: false
 
-(37) VeloxColumnarToRowExec
+(37) VeloxColumnarToRow
 Input [3]: [cntrycode#X, numcust#X, totacctbal#X]
 
 (38) Scan parquet

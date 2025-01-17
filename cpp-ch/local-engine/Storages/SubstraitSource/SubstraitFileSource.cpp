@@ -17,6 +17,7 @@
 #include <functional>
 #include <memory>
 
+#include <boost/algorithm/string/case_conv.hpp>
 #include <substrait/plan.pb.h>
 #include <magic_enum.hpp>
 #include <Poco/URI.h>
@@ -53,12 +54,28 @@ namespace local_engine
 // build blocks with a const virtual column to indicate how many rows is in it.
 static DB::Block getRealHeader(const DB::Block & header)
 {
-    return header ? header : BlockUtil::buildRowCountHeader();
+    auto header_without_input_file_columns = InputFileNameParser::removeInputFileColumn(header);
+    auto result_header = header;
+    if (!header_without_input_file_columns.columns())
+    {
+        auto virtual_header =  BlockUtil::buildRowCountHeader();
+        for (const auto & column_with_type_and_name : virtual_header.getColumnsWithTypeAndName())
+        {
+            result_header.insert(column_with_type_and_name);
+        }
+    }
+    return result_header;
 }
 
 SubstraitFileSource::SubstraitFileSource(
-    const DB::ContextPtr & context_, const DB::Block & header_, const substrait::ReadRel::LocalFiles & file_infos)
-    : DB::SourceWithKeyCondition(getRealHeader(header_), false), context(context_), output_header(header_), to_read_header(output_header)
+    const DB::ContextPtr & context_,
+    const DB::Block & header_,
+    const substrait::ReadRel::LocalFiles & file_infos)
+    : DB::SourceWithKeyCondition(getRealHeader(header_), false)
+    , context(context_)
+    , output_header(InputFileNameParser::removeInputFileColumn(header_))
+    , to_read_header(output_header)
+    , input_file_name(InputFileNameParser::containsInputFileColumns(header_))
 {
     if (file_infos.items_size())
     {
@@ -71,8 +88,8 @@ SubstraitFileSource::SubstraitFileSource(
         /// File partition keys are read from the file path
         const auto partition_keys = files[0]->getFilePartitionKeys();
         for (const auto & key : partition_keys)
-            if (to_read_header.findByName(key))
-                to_read_header.erase(key);
+            if (const auto * col = to_read_header.findByName(key, true))
+                to_read_header.erase(col->name);
     }
 }
 
@@ -95,7 +112,11 @@ DB::Chunk SubstraitFileSource::generate()
 
         DB::Chunk chunk;
         if (file_reader->pull(chunk))
+        {
+            if (input_file_name)
+                input_file_name_parser.addInputFileColumnsToChunk(output.getHeader(), chunk);
             return chunk;
+        }
 
         /// try to read from next file
         file_reader.reset();
@@ -138,7 +159,9 @@ bool SubstraitFileSource::tryPrepareReader()
     }
     else
         file_reader = std::make_unique<NormalFileReader>(current_file, context, to_read_header, output_header);
-
+    input_file_name_parser.setFileName(current_file->getURIPath());
+    input_file_name_parser.setBlockStart(current_file->getStartOffset());
+    input_file_name_parser.setBlockLength(current_file->getLength());
     file_reader->applyKeyCondition(key_condition, column_index_filter);
     return true;
 }
@@ -315,14 +338,15 @@ bool ConstColumnsFileReader::pull(DB::Chunk & chunk)
     if (const size_t col_num = header.columns())
     {
         res_columns.reserve(col_num);
-        const auto & partition_values = file->getFilePartitionValues();
+        const auto & normalized_partition_values = file->getFileNormalizedPartitionValues();
         for (size_t pos = 0; pos < col_num; ++pos)
         {
-            auto col_with_name_and_type = header.getByPosition(pos);
-            auto type = col_with_name_and_type.type;
-            const auto & name = col_with_name_and_type.name;
-            auto it = partition_values.find(name);
-            if (it == partition_values.end())
+            const auto & column = header.getByPosition(pos);
+            const auto & type = column.type;
+            const auto & name = column.name;
+
+            auto it = normalized_partition_values.find(boost::to_lower_copy(name));
+            if (it == normalized_partition_values.end())
                 throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "Unknow partition column : {}", name);
 
             res_columns.emplace_back(createColumn(it->second, type, to_read_rows));
@@ -355,13 +379,13 @@ bool NormalFileReader::pull(DB::Chunk & chunk)
     if (!rows)
         return false;
 
-    const auto read_columns = raw_chunk.detachColumns();
-    auto columns_with_name_and_type = output_header.getColumnsWithTypeAndName();
-    auto partition_values = file->getFilePartitionValues();
+    auto read_columns = raw_chunk.detachColumns();
+    const auto & columns = output_header.getColumnsWithTypeAndName();
+    const auto & normalized_partition_values = file->getFileNormalizedPartitionValues();
 
     DB::Columns res_columns;
-    res_columns.reserve(columns_with_name_and_type.size());
-    for (auto & column : columns_with_name_and_type)
+    res_columns.reserve(columns.size());
+    for (auto & column : columns)
     {
         if (to_read_header.has(column.name))
         {
@@ -370,12 +394,11 @@ bool NormalFileReader::pull(DB::Chunk & chunk)
         }
         else
         {
-            auto it = partition_values.find(column.name);
-            if (it == partition_values.end())
-            {
+            auto it = normalized_partition_values.find(boost::to_lower_copy(column.name));
+            if (it == normalized_partition_values.end())
                 throw DB::Exception(
                     DB::ErrorCodes::LOGICAL_ERROR, "Not found column({}) from file({}) partition keys.", column.name, file->getURIPath());
-            }
+
             res_columns.push_back(createColumn(it->second, column.type, rows));
         }
     }

@@ -16,9 +16,10 @@
  */
 package org.apache.gluten.sql.shims.spark32
 
-import org.apache.gluten.execution.datasource.GlutenParquetWriterInjects
+import org.apache.gluten.execution.datasource.GlutenFormatFactory
 import org.apache.gluten.expression.{ExpressionNames, Sig}
 import org.apache.gluten.sql.shims.{ShimDescriptor, SparkShims}
+import org.apache.gluten.utils.ExceptionUtils
 
 import org.apache.spark.{ShuffleUtils, SparkContext, TaskContext, TaskContextUtils}
 import org.apache.spark.scheduler.TaskInfo
@@ -29,6 +30,7 @@ import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference, BinaryExpression, Expression, InputFileBlockLength, InputFileBlockStart, InputFileName}
 import org.apache.spark.sql.catalyst.expressions.aggregate.TypedImperativeAggregate
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Distribution, HashClusteredDistribution}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -50,7 +52,10 @@ import org.apache.spark.sql.types.{DecimalType, StructField, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.storage.{BlockId, BlockManagerId}
 
-import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{FileStatus, LocatedFileStatus, Path}
+import org.apache.parquet.crypto.ParquetCryptoRuntimeException
+import org.apache.parquet.hadoop.ParquetFileReader
 import org.apache.parquet.schema.MessageType
 
 import java.util.{HashMap => JHashMap, Map => JMap, Properties}
@@ -90,7 +95,7 @@ class Spark32Shims extends SparkShims {
       options: CaseInsensitiveStringMap,
       partitionFilters: Seq[Expression],
       dataFilters: Seq[Expression]): TextScan = {
-    new TextScan(
+    TextScan(
       sparkSession,
       fileIndex,
       readDataSchema,
@@ -153,7 +158,7 @@ class Spark32Shims extends SparkShims {
       mightContainReplacer: (Expression, Expression) => BinaryExpression): Expression = expr
 
   override def getExtendedColumnarPostRules(): List[SparkSession => Rule[SparkPlan]] = {
-    List(session => GlutenParquetWriterInjects.getInstance().getExtendedColumnarPostRule(session))
+    List(session => GlutenFormatFactory.getExtendedColumnarPostRule(session))
   }
 
   override def createTestTaskContext(properties: Properties): TaskContext = {
@@ -282,5 +287,32 @@ class Spark32Shims extends SparkShims {
     val p = decimalType.precision
     val s = decimalType.scale
     DecimalType(p, if (toScale > s) s else toScale)
+  }
+
+  override def getOperatorId(plan: QueryPlan[_]): Option[Int] = {
+    plan.getTagValue(QueryPlan.OP_ID_TAG)
+  }
+
+  override def setOperatorId(plan: QueryPlan[_], opId: Int): Unit = {
+    plan.setTagValue(QueryPlan.OP_ID_TAG, opId)
+  }
+
+  override def unsetOperatorId(plan: QueryPlan[_]): Unit = {
+    plan.unsetTagValue(QueryPlan.OP_ID_TAG)
+  }
+
+  override def isParquetFileEncrypted(
+      fileStatus: LocatedFileStatus,
+      conf: Configuration): Boolean = {
+    try {
+      ParquetFileReader.readFooter(new Configuration(), fileStatus.getPath).toString
+      false
+    } catch {
+      case e: Exception if ExceptionUtils.hasCause(e, classOf[ParquetCryptoRuntimeException]) =>
+        true
+      case e: Throwable =>
+        e.printStackTrace()
+        false
+    }
   }
 }

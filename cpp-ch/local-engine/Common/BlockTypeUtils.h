@@ -73,17 +73,48 @@ inline DB::DataTypePtr DATE()
     return std::make_shared<DB::DataTypeDate32>();
 }
 
-inline DB::Block makeBlockHeader(const DB::ColumnsWithTypeAndName & data_)
+inline DB::Block makeBlockHeader(const DB::ColumnsWithTypeAndName & data)
 {
-    return DB::Block(data_);
+    return DB::Block(data);
 }
 
 DB::NamesAndTypesList blockToNameAndTypeList(const DB::Block & header);
 DB::DataTypePtr wrapNullableType(bool nullable, DB::DataTypePtr nested_type);
 
+inline DB::DataTypePtr wrapNullableType(DB::DataTypePtr nested_type)
+{
+    return wrapNullableType(true, nested_type);
+}
 inline DB::DataTypePtr wrapNullableType(const substrait::Type_Nullability nullable, const DB::DataTypePtr & nested_type)
 {
     return wrapNullableType(nullable == substrait::Type_Nullability_NULLABILITY_NULLABLE, nested_type);
 }
 
+inline bool sameName(const DB::Block & left, const DB::Block & right)
+{
+    auto mismatch_pair = std::mismatch(
+        left.begin(),
+        left.end(),
+        right.begin(),
+        [](const DB::ColumnWithTypeAndName & lhs, const DB::ColumnWithTypeAndName & rhs) { return lhs.name == rhs.name; });
+    return mismatch_pair.first == left.end();
+}
+
+inline bool sameType(const DB::Block & left, const DB::Block & right)
+{
+    auto mismatch_pair = std::mismatch(
+        left.begin(),
+        left.end(),
+        right.begin(),
+        [](const DB::ColumnWithTypeAndName & lhs, const DB::ColumnWithTypeAndName & rhs) { return lhs.type->equals(*rhs.type); });
+    return mismatch_pair.first == left.end();
+}
+
+inline DB::NamesWithAliases buildNamesWithAliases(const DB::Block & input, const DB::Block & output)
+{
+    DB::NamesWithAliases aliases;
+    for (auto output_name = output.begin(), input_iter = input.begin(); output_name != output.end(); ++output_name, ++input_iter)
+        aliases.emplace_back(DB::NameWithAlias(input_iter->name, output_name->name));
+    return aliases;
+}
 }

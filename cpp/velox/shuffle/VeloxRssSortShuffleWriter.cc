@@ -20,8 +20,8 @@
 #include "memory/VeloxMemoryManager.h"
 #include "shuffle/ShuffleSchema.h"
 #include "utils/Common.h"
+#include "utils/Macros.h"
 #include "utils/VeloxArrowUtils.h"
-#include "utils/macros.h"
 
 #include "velox/common/base/Nulls.h"
 #include "velox/type/Type.h"
@@ -70,17 +70,21 @@ arrow::Status VeloxRssSortShuffleWriter::write(std::shared_ptr<ColumnarBatch> cb
     RETURN_NOT_OK(initFromRowVector(*rv.get()));
     RETURN_NOT_OK(doSort(rv, partitionWriter_.get()->options().sortBufferMaxSize));
   } else if (options_.partitioning == Partitioning::kRange) {
-    auto compositeBatch = std::dynamic_pointer_cast<CompositeColumnarBatch>(cb);
-    VELOX_CHECK_NOT_NULL(compositeBatch);
-    auto batches = compositeBatch->getBatches();
-    VELOX_CHECK_EQ(batches.size(), 2);
-    auto pidBatch = VeloxColumnarBatch::from(veloxPool_.get(), batches[0]);
+    auto veloxColumnBatch = VeloxColumnarBatch::from(veloxPool_.get(), cb);
+    VELOX_CHECK_NOT_NULL(veloxColumnBatch);
+    const int32_t numColumns = veloxColumnBatch->numColumns();
+    VELOX_CHECK(numColumns >= 2);
+    auto pidBatch = veloxColumnBatch->select(veloxPool_.get(), {0});
     auto pidArr = getFirstColumn(*(pidBatch->getRowVector()));
     START_TIMING(cpuWallTimingList_[CpuWallTimingCompute]);
     setSortState(SortState::kSort);
     RETURN_NOT_OK(partitioner_->compute(pidArr, pidBatch->numRows(), batches_.size(), rowVectorIndexMap_));
     END_TIMING();
-    auto rvBatch = VeloxColumnarBatch::from(veloxPool_.get(), batches[1]);
+    std::vector<int32_t> range;
+    for (int32_t i = 1; i < numColumns; i++) {
+      range.push_back(i);
+    }
+    auto rvBatch = veloxColumnBatch->select(veloxPool_.get(), range);
     auto rv = rvBatch->getFlattenedRowVector();
     RETURN_NOT_OK(initFromRowVector(*rv.get()));
     RETURN_NOT_OK(doSort(rv, partitionWriter_.get()->options().sortBufferMaxSize));
@@ -113,7 +117,6 @@ arrow::Status VeloxRssSortShuffleWriter::write(std::shared_ptr<ColumnarBatch> cb
 }
 
 arrow::Status VeloxRssSortShuffleWriter::evictBatch(uint32_t partitionId) {
-  int64_t rawSize = batch_->size();
   bufferOutputStream_->seekp(0);
   batch_->flush(bufferOutputStream_.get());
   auto buffer = bufferOutputStream_->getBuffer();
@@ -134,7 +137,7 @@ arrow::Status VeloxRssSortShuffleWriter::evictRowVector(uint32_t partitionId) {
   if (options_.partitioning != Partitioning::kSingle) {
     if (auto it = rowVectorIndexMap_.find(partitionId); it != rowVectorIndexMap_.end()) {
       const auto& rowIndices = it->second;
-      VELOX_DCHECK(!rowIndices.empty())
+      VELOX_DCHECK(!rowIndices.empty());
 
       size_t idx = 0;
       const auto outputSize = rowIndices.size();

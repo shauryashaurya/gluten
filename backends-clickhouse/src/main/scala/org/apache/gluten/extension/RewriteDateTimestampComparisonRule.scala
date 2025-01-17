@@ -16,14 +16,13 @@
  */
 package org.apache.gluten.extension
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.rules.Rule
-import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 import org.apache.spark.unsafe.types.UTF8String
 
@@ -37,7 +36,7 @@ import org.apache.spark.unsafe.types.UTF8String
 // This rule try to make the filter condition into integer comparison, which is more efficient.
 // The above example will be rewritten into
 //    select * from table where to_unixtime('2023-11-02', 'yyyy-MM-dd') >= unix_timestamp
-class RewriteDateTimestampComparisonRule(session: SparkSession, conf: SQLConf)
+class RewriteDateTimestampComparisonRule(spark: SparkSession)
   extends Rule[LogicalPlan]
   with Logging {
 
@@ -57,8 +56,8 @@ class RewriteDateTimestampComparisonRule(session: SparkSession, conf: SQLConf)
   override def apply(plan: LogicalPlan): LogicalPlan = {
     if (
       plan.resolved &&
-      GlutenConfig.getConf.enableGluten &&
-      GlutenConfig.getConf.enableRewriteDateTimestampComparison
+      GlutenConfig.get.enableGluten &&
+      GlutenConfig.get.enableRewriteDateTimestampComparison
     ) {
       visitPlan(plan)
     } else {

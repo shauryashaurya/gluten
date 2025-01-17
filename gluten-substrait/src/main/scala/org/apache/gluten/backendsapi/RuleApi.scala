@@ -16,9 +16,9 @@
  */
 package org.apache.gluten.backendsapi
 
-import org.apache.gluten.extension.injector.RuleInjector
+import org.apache.gluten.extension.injector.Injector
 
 trait RuleApi {
-  // Injects all Gluten / Spark query planner rules used by the backend.
-  def injectRules(injector: RuleInjector): Unit
+  // Injects all Spark query planner rules used by the Gluten backend.
+  def injectRules(injector: Injector): Unit
 }

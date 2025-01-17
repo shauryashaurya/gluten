@@ -16,8 +16,8 @@
  */
 package org.apache.spark.sql.execution.utils
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.clickhouse.CHBackendSettings
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.expression.ConverterUtils
 import org.apache.gluten.row.SparkRowInfo
 import org.apache.gluten.vectorized._
@@ -32,7 +32,7 @@ import org.apache.spark.shuffle.utils.RangePartitionerBoundsGenerator
 import org.apache.spark.sql.catalyst.InternalRow
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BindReferences, BoundReference, UnsafeProjection, UnsafeRow}
 import org.apache.spark.sql.catalyst.expressions.codegen.LazilyGeneratedOrdering
-import org.apache.spark.sql.catalyst.plans.physical.{SinglePartition, _}
+import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.metric.{SQLMetric, SQLShuffleWriteMetricsReporter}
@@ -58,10 +58,13 @@ object CHExecUtil extends Logging {
   def toBytes(
       dataSize: SQLMetric,
       iter: Iterator[ColumnarBatch],
+      isNullAware: Boolean = false,
+      keyColumnIndex: Int = 0,
       compressionCodec: Option[String] = Some("lz4"),
       compressionLevel: Option[Int] = None,
-      bufferSize: Int = 4 << 10): Iterator[(Int, Array[Byte])] = {
-    var count = 0
+      bufferSize: Int = 4 << 10): Iterator[(Long, Array[Byte], Boolean)] = {
+    var count = 0L
+    var hasNullKeyValues = false
     val bos = new ByteArrayOutputStream()
     val buffer = new Array[Byte](bufferSize) // 4K
     val level = compressionLevel.getOrElse(Int.MinValue)
@@ -69,20 +72,35 @@ object CHExecUtil extends Logging {
       compressionCodec
         .map(new BlockOutputStream(bos, buffer, dataSize, true, _, level, bufferSize))
         .getOrElse(new BlockOutputStream(bos, buffer, dataSize, false, "", level, bufferSize))
-    while (iter.hasNext) {
-      val batch = iter.next()
-      count += batch.numRows
-      blockOutputStream.write(batch)
+    if (isNullAware) {
+      while (iter.hasNext) {
+        val batch = iter.next()
+        val blockStats = CHNativeBlock.fromColumnarBatch(batch).getBlockStats(keyColumnIndex)
+        count += blockStats.getBlockRecordCount
+        hasNullKeyValues = hasNullKeyValues || blockStats.isHasNullKeyValues
+        blockOutputStream.write(batch)
+      }
+    } else {
+      while (iter.hasNext) {
+        val batch = iter.next()
+        count += batch.numRows()
+        blockOutputStream.write(batch)
+      }
     }
     blockOutputStream.flush()
     blockOutputStream.close()
-    Iterator((count, bos.toByteArray))
+    Iterator((count, bos.toByteArray, hasNullKeyValues))
   }
 
-  def buildSideRDD(dataSize: SQLMetric, newChild: SparkPlan): RDD[(Int, Array[Byte])] = {
+  def buildSideRDD(
+      dataSize: SQLMetric,
+      newChild: SparkPlan,
+      isNullAware: Boolean,
+      keyColumnIndex: Int
+  ): RDD[(Long, Array[Byte], Boolean)] = {
     newChild
       .executeColumnar()
-      .mapPartitionsInternal(iter => toBytes(dataSize, iter))
+      .mapPartitionsInternal(iter => toBytes(dataSize, iter, isNullAware, keyColumnIndex))
   }
 
   private def buildRangePartitionSampleRDD(
@@ -95,12 +113,8 @@ object CHExecUtil extends Logging {
           iter =>
             iter.flatMap(
               batch => {
-                val blockAddress = CHNativeBlock.fromColumnarBatch(batch).blockAddress()
-
                 // generate rows from a columnar batch
-                val rowItr: Iterator[InternalRow] =
-                  getRowIterFromSparkRowInfo(blockAddress, batch.numCols(), batch.numRows())
-
+                val rowItr: Iterator[InternalRow] = c2r(batch)
                 val projection =
                   UnsafeProjection.create(sortingExpressions.map(_.child), outputAttributes)
                 val mutablePair = new MutablePair[InternalRow, Null]()
@@ -144,8 +158,17 @@ object CHExecUtil extends Logging {
       columns: Int,
       rows: Int): Iterator[InternalRow] = {
     val rowInfo = CHBlockConverterJniWrapper.convertColumnarToRow(blockAddress, null)
+    assert(rowInfo.fieldsNum == columns)
     getRowIterFromSparkRowInfo(rowInfo, columns, rows)
   }
+
+  def c2r(batch: ColumnarBatch): Iterator[InternalRow] = {
+    getRowIterFromSparkRowInfo(
+      CHNativeBlock.fromColumnarBatch(batch).blockAddress(),
+      batch.numCols(),
+      batch.numRows())
+  }
+
   private def buildPartitionedBlockIterator(
       cbIter: Iterator[ColumnarBatch],
       options: IteratorOptions,
@@ -216,7 +239,7 @@ object CHExecUtil extends Logging {
 
   private def buildPartitioningOptions(nativePartitioning: NativePartitioning): IteratorOptions = {
     val options = new IteratorOptions
-    options.setBufferSize(GlutenConfig.getConf.maxBatchSize)
+    options.setBufferSize(GlutenConfig.get.maxBatchSize)
     options.setName(nativePartitioning.getShortName)
     options.setPartitionNum(nativePartitioning.getNumPartitions)
     options.setExpr(new String(nativePartitioning.getExprList))
@@ -289,7 +312,7 @@ object CHExecUtil extends Logging {
           rddForSampling,
           sortingExpressions,
           childOutputAttributes)
-        val orderingAndRangeBounds = generator.getRangeBoundsJsonString
+        val rangeBoundsInfo = generator.getRangeBoundsJsonString
         val attributePos = if (projectOutputAttributes != null) {
           projectOutputAttributes.map(
             attr =>
@@ -302,10 +325,11 @@ object CHExecUtil extends Logging {
         }
         new NativePartitioning(
           GlutenShuffleUtils.RangePartitioningShortName,
-          numPartitions,
+          rangeBoundsInfo.boundsSize + 1,
           Array.empty[Byte],
-          orderingAndRangeBounds.getBytes(),
-          attributePos.mkString(",").getBytes)
+          rangeBoundsInfo.json.getBytes,
+          attributePos.mkString(",").getBytes
+        )
       case p =>
         throw new IllegalStateException(s"Unknow partition type: ${p.getClass.toString}")
     }
@@ -321,8 +345,8 @@ object CHExecUtil extends Logging {
 
     val rddWithPartitionKey: RDD[Product2[Int, ColumnarBatch]] =
       if (
-        GlutenConfig.getConf.isUseColumnarShuffleManager
-        || GlutenConfig.getConf.isUseCelebornShuffleManager
+        GlutenConfig.get.isUseColumnarShuffleManager
+        || GlutenConfig.get.isUseCelebornShuffleManager
       ) {
         newPartitioning match {
           case _ =>
@@ -346,7 +370,7 @@ object CHExecUtil extends Logging {
     val dependency =
       new ColumnarShuffleDependency[Int, ColumnarBatch, ColumnarBatch](
         rddWithPartitionKey,
-        new PartitionIdPassthrough(newPartitioning.numPartitions),
+        new PartitionIdPassthrough(nativePartitioning.getNumPartitions),
         serializer,
         shuffleWriterProcessor = ShuffleExchangeExec.createShuffleWriteProcessor(writeMetrics),
         nativePartitioning = nativePartitioning,

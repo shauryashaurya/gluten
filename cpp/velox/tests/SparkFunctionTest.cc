@@ -22,6 +22,7 @@
 
 using namespace facebook::velox::functions::sparksql::test;
 using namespace facebook::velox;
+
 class SparkFunctionTest : public SparkFunctionBaseTest {
  public:
   SparkFunctionTest() {
@@ -87,9 +88,9 @@ class SparkFunctionTest : public SparkFunctionBaseTest {
         {1, 10, 1},
         {0, 10, 0},
         {-1, 10, -1},
-        {1, -1, 1},
+        {1, -1, 0},
         {0, -2, 0},
-        {-1, -3, -1}};
+        {-1, -3, 0}};
   }
 };
 

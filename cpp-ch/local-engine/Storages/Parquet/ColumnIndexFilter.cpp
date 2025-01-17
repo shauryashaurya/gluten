@@ -393,7 +393,7 @@ struct DESCENDING : BoundaryOrder
         {
             if (lowerLeft > lowerRight)
                 return std::nullopt;
-            Int32 i = std::floor((lowerLeft + lowerRight) / 2);
+            Int32 i = floorMid(lowerLeft, lowerRight);
             if (comparator.compareValueToMax(i) > 0)
                 lowerRight = upperRight = i - 1;
             else if (comparator.compareValueToMin(i) < 0)
@@ -406,7 +406,7 @@ struct DESCENDING : BoundaryOrder
         {
             if (upperLeft > upperRight)
                 return std::nullopt;
-            Int32 i = std::ceil((upperLeft + upperRight) / 2);
+            Int32 i = ceilingMid(upperLeft, upperRight);
             if (comparator.compareValueToMax(i) > 0)
                 upperRight = i - 1;
             else if (comparator.compareValueToMin(i) < 0)
@@ -958,12 +958,14 @@ RowRanges ColumnIndexFilter::calculateRowRanges(const ColumnIndexStore & index_s
                 CALL_OPERATOR(element, [](const ColumnIndex & index, const RPNElement & e) { return index.in(e.column); });
                 break;
             case RPNElement::FUNCTION_NOT_IN:
+                rpn_stack.emplace_back(RowRanges::createSingle(rowgroup_count));
                 break;
             case RPNElement::FUNCTION_UNKNOWN:
                 rpn_stack.emplace_back(RowRanges::createSingle(rowgroup_count));
                 break;
             case RPNElement::FUNCTION_NOT:
-                assert(false);
+                assert(!rpn_stack.empty());
+                rpn_stack.back() = RowRanges::createSingle(rowgroup_count);
                 break;
             case RPNElement::FUNCTION_AND:
                 CALL_LOGICAL_OP(RowRanges::intersection);
@@ -972,10 +974,10 @@ RowRanges ColumnIndexFilter::calculateRowRanges(const ColumnIndexStore & index_s
                 CALL_LOGICAL_OP(RowRanges::unionRanges);
                 break;
             case RPNElement::ALWAYS_FALSE:
-                assert(false);
+                throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "RPNElement::ALWAYS_FALSE in ColumnIndexFilter::calculateRowRanges");
                 break;
             case RPNElement::ALWAYS_TRUE:
-                assert(false);
+                throw DB::Exception(DB::ErrorCodes::LOGICAL_ERROR, "RPNElement::ALWAYS_TRUE in ColumnIndexFilter::calculateRowRanges");
                 break;
         }
     }

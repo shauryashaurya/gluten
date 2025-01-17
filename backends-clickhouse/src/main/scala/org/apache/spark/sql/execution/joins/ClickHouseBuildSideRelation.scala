@@ -22,8 +22,8 @@ import org.apache.gluten.vectorized._
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
-import org.apache.spark.sql.catalyst.plans.physical.BroadcastMode
+import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression, UnsafeProjection}
+import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, IdentityBroadcastMode}
 import org.apache.spark.sql.execution.utils.CHExecUtil
 import org.apache.spark.sql.vectorized.ColumnarBatch
 import org.apache.spark.storage.CHShuffleReadStreamFactory
@@ -35,7 +35,8 @@ case class ClickHouseBuildSideRelation(
     output: Seq[Attribute],
     batches: Array[Byte],
     numOfRows: Long,
-    newBuildKeys: Seq[Expression] = Seq.empty)
+    newBuildKeys: Seq[Expression] = Seq.empty,
+    hasNullKeyValues: Boolean = false)
   extends BuildSideRelation
   with Logging {
 
@@ -58,7 +59,8 @@ case class ClickHouseBuildSideRelation(
           numOfRows,
           broadCastContext,
           newBuildKeys.asJava,
-          output.asJava)
+          output.asJava,
+          hasNullKeyValues)
         (hashTableData, this)
       } else {
         (StorageJoinBuilder.nativeCloneBuildHashTable(hashTableData), null)
@@ -70,7 +72,7 @@ case class ClickHouseBuildSideRelation(
   }
 
   /**
-   * Transform columnar broadcast value to Array[InternalRow] by key and distinct.
+   * Transform columnar broadcast value to Array[InternalRow] by key.
    *
    * @return
    */
@@ -78,10 +80,18 @@ case class ClickHouseBuildSideRelation(
     // native block reader
     val blockReader = new CHStreamReader(CHShuffleReadStreamFactory.create(batches, true))
     val broadCastIter: Iterator[ColumnarBatch] = IteratorUtil.createBatchIterator(blockReader)
+
+    val transformProjections = mode match {
+      case HashedRelationBroadcastMode(k, _) => k
+      case IdentityBroadcastMode => output
+    }
+
     // Expression compute, return block iterator
     val expressionEval = new SimpleExpressionEval(
       new ColumnarNativeIterator(broadCastIter.asJava),
-      PlanNodesUtil.genProjectionsPlanNode(key, output))
+      PlanNodesUtil.genProjectionsPlanNode(transformProjections, output))
+
+    val proj = UnsafeProjection.create(Seq(key))
 
     try {
       // convert columnar to row
@@ -93,6 +103,7 @@ case class ClickHouseBuildSideRelation(
           } else {
             CHExecUtil
               .getRowIterFromSparkRowInfo(block, batch.numColumns(), batch.numRows())
+              .map(proj)
               .map(row => row.copy())
           }
       }.toArray

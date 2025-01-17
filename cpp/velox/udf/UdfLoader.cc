@@ -25,9 +25,9 @@
 #include "Udaf.h"
 #include "Udf.h"
 #include "UdfLoader.h"
+#include "utils/Exception.h"
+#include "utils/Macros.h"
 #include "utils/StringUtil.h"
-#include "utils/exception.h"
-#include "utils/macros.h"
 
 namespace {
 
@@ -49,10 +49,10 @@ namespace gluten {
 
 void UdfLoader::loadUdfLibraries(const std::string& libPaths) {
   const auto& paths = splitPaths(libPaths, /*checkExists=*/true);
-  loadUdfLibraries0(paths);
+  loadUdfLibrariesInternal(paths);
 }
 
-void UdfLoader::loadUdfLibraries0(const std::vector<std::string>& libPaths) {
+void UdfLoader::loadUdfLibrariesInternal(const std::vector<std::string>& libPaths) {
   for (const auto& libPath : libPaths) {
     if (handles_.find(libPath) == handles_.end()) {
       void* handle = dlopen(libPath.c_str(), RTLD_LAZY);
@@ -77,6 +77,9 @@ std::unordered_set<std::shared_ptr<UdfLoader::UdfSignature>> UdfLoader::getRegis
       int numUdf = getNumUdf();
       // allocate
       UdfEntry* udfEntries = static_cast<UdfEntry*>(malloc(sizeof(UdfEntry) * numUdf));
+      if (udfEntries == nullptr) {
+        throw gluten::GlutenException("malloc failed");
+      }
 
       void* getUdfEntriesSym = loadSymFromLibrary(handle, libPath, GLUTEN_TOSTRING(GLUTEN_GET_UDF_ENTRIES));
       auto getUdfEntries = reinterpret_cast<void (*)(UdfEntry*)>(getUdfEntriesSym);
@@ -101,6 +104,9 @@ std::unordered_set<std::shared_ptr<UdfLoader::UdfSignature>> UdfLoader::getRegis
       int numUdaf = getNumUdaf();
       // allocate
       UdafEntry* udafEntries = static_cast<UdafEntry*>(malloc(sizeof(UdafEntry) * numUdaf));
+      if (udafEntries == nullptr) {
+        throw gluten::GlutenException("malloc failed");
+      }
 
       void* getUdafEntriesSym = loadSymFromLibrary(handle, libPath, GLUTEN_TOSTRING(GLUTEN_GET_UDAF_ENTRIES));
       auto getUdafEntries = reinterpret_cast<void (*)(UdafEntry*)>(getUdafEntriesSym);

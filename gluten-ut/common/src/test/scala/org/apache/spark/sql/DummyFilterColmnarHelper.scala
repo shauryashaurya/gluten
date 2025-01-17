@@ -16,7 +16,7 @@
  */
 package org.apache.spark.sql
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.utils.{BackendTestUtils, SystemParameters}
 
 import org.apache.spark.rdd.RDD
@@ -37,7 +37,7 @@ case class DummyFilterColumnar(child: LogicalPlan) extends UnaryNode {
   }
 }
 
-case class DummyFilterColumnarExec(child: SparkPlan) extends SparkPlan with UnaryExecNode {
+case class DummyFilterColumnarExec(child: SparkPlan) extends UnaryExecNode {
   override protected def doExecute(): RDD[InternalRow] = {
     throw new IllegalStateException("Do not support row based operation.")
   }

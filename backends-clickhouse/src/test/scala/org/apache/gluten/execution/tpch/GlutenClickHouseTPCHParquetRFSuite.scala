@@ -56,7 +56,7 @@ class GlutenClickHouseTPCHParquetRFSuite extends GlutenClickHouseTPCHSaltNullPar
           |""".stripMargin,
         compareResult = true,
         df => {
-          if (sparkVersion.equals("3.3")) {
+          if (spark33) {
             val filterExecs = df.queryExecution.executedPlan.collect {
               case filter: FilterExecTransformerBase => filter
             }
@@ -69,6 +69,30 @@ class GlutenClickHouseTPCHParquetRFSuite extends GlutenClickHouseTPCHSaltNullPar
           }
         }
       )
+    }
+  }
+
+  test("GLUTEN-7596: Empty list of columns passed") {
+    val sql_str =
+      s"""
+         |SELECT
+         |    l_orderkey,
+         |    count(*) cnt
+         |FROM lineitem inner join
+         |    (
+         |    select * from (
+         |    select count(*) cct,o_orderkey from orders group by o_orderkey)
+         |    where cct > 10000
+         |    )
+         |GROUP BY
+         |    l_orderkey
+         |ORDER BY
+         |    l_orderkey
+         |LIMIT 10;
+         |""".stripMargin
+
+    withSQLConf("spark.sql.adaptive.enabled" -> "false") {
+      compareResultsAgainstVanillaSpark(sql_str, compareResult = true, _ => {})
     }
   }
 }

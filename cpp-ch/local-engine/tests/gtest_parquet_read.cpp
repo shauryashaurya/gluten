@@ -20,10 +20,9 @@
 #if USE_PARQUET
 
 #include <ranges>
+#include <incbin.h>
 #include <Core/Range.h>
-#include <Common/BlockTypeUtils.h>
 #include <DataTypes/DataTypeArray.h>
-#include <DataTypes/DataTypeDate32.h>
 #include <DataTypes/DataTypeDateTime.h>
 #include <DataTypes/DataTypeFactory.h>
 #include <DataTypes/DataTypeTuple.h>
@@ -32,7 +31,7 @@
 #include <Interpreters/ActionsDAG.h>
 #include <Interpreters/ActionsVisitor.h>
 #include <Interpreters/ExpressionActions.h>
-#include <Parser/SerializedPlanParser.h>
+#include <Parser/LocalExecutor.h>
 #include <Processors/Executors/PullingPipelineExecutor.h>
 #include <Processors/Formats/Impl/ArrowColumnToCHColumn.h>
 #include <Processors/Formats/Impl/ParquetBlockInputFormat.h>
@@ -44,6 +43,8 @@
 #include <parquet/arrow/reader.h>
 #include <parquet/level_conversion.h>
 #include <tests/gluten_test_util.h>
+#include <Common/BlockTypeUtils.h>
+#include <Common/DebugUtils.h>
 
 using namespace DB;
 
@@ -110,7 +111,7 @@ void readData(const String & path, const std::map<String, Field> & fields)
 
     InputFormatPtr format;
     if constexpr (std::is_same_v<InputFormat, DB::ParquetBlockInputFormat>)
-        format = std::make_shared<InputFormat>(in, header, settings, 1, 8192);
+        format = std::make_shared<InputFormat>(in, header, settings, 1, 1, 8192);
     else
         format = std::make_shared<InputFormat>(in, header, settings);
 
@@ -143,27 +144,27 @@ TEST(ParquetRead, ReadSchema)
 
 TEST(ParquetRead, VerifyPageindexReaderSupport)
 {
-    EXPECT_FALSE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_FALSE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("alltypes/alltypes_notnull.parquet")))));
-    EXPECT_FALSE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_FALSE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("alltypes/alltypes_null.parquet")))));
 
 
-    EXPECT_FALSE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_FALSE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("array.parquet")))));
-    EXPECT_TRUE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_TRUE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("date.parquet")))));
-    EXPECT_TRUE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_TRUE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("datetime64.parquet")))));
-    EXPECT_TRUE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_TRUE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("decimal.parquet")))));
-    EXPECT_TRUE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_TRUE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("iris.parquet")))));
-    EXPECT_FALSE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_FALSE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("map.parquet")))));
-    EXPECT_TRUE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_TRUE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("sample.parquet")))));
-    EXPECT_FALSE(local_engine::ParquetFormatFile::pageindex_reader_support(
+    EXPECT_FALSE(local_engine::ParquetFormatFile::supportPageindexReader(
         toBlockRowType(local_engine::test::readParquetSchema(local_engine::test::data_file("struct.parquet")))));
 }
 
@@ -445,5 +446,18 @@ TEST(ParquetRead, VectorizedColumnReader)
     const auto & col_b = *(chunk.getColumns()[0]);
     for (size_t i = 0; i < chunk.getNumRows(); i++)
         EXPECT_EQ(col_b.getFloat64(i), i + 1);
+}
+
+INCBIN(_upper_col_parquet_, SOURCE_DIR "/utils/extern-local-engine/tests/json/upper_col_parquet.json");
+TEST(ParquetRead, UpperColRead)
+{
+    constexpr std::string_view split_template
+        = R"({"items":[{"uriFile":"{replace_local_files}","length":"459","parquet":{},"schema":{},"metadataColumns":[{"key":"input_file_name","value":"{replace_local_files}"},{"key":"input_file_block_length","value":"459"},{"key":"input_file_block_start","value":"0"}],"properties":{"fileSize":"459","modificationTime":"1735012863732"}}]})";
+    constexpr std::string_view file{GLUTEN_DATA_DIR("/utils/extern-local-engine/tests/data/upper_case_col.parquet")};
+    auto [_, local_executor] = local_engine::test::create_plan_and_executor(EMBEDDED_PLAN(_upper_col_parquet_), split_template, file, {});
+    EXPECT_TRUE(local_executor->hasNext());
+    const Block & block = *local_executor->nextColumnar();
+
+    debug::headBlock(block);
 }
 #endif

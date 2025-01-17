@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.csv.CSVOptions
 import org.apache.spark.sql.catalyst.expressions.{Attribute, BinaryExpression, Expression}
 import org.apache.spark.sql.catalyst.expressions.aggregate.TypedImperativeAggregate
+import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.plans.physical.{Distribution, Partitioning}
 import org.apache.spark.sql.catalyst.rules.Rule
@@ -47,7 +48,9 @@ import org.apache.spark.sql.types.{DecimalType, StructType}
 import org.apache.spark.sql.util.CaseInsensitiveStringMap
 import org.apache.spark.storage.{BlockId, BlockManagerId}
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.{FileStatus, Path}
+import org.apache.hadoop.fs.LocatedFileStatus
 import org.apache.parquet.schema.MessageType
 
 import java.util.{Map => JMap, Properties}
@@ -266,4 +269,25 @@ trait SparkShims {
       DecimalType(math.min(integralLeastNumDigits + newScale, 38), newScale)
     }
   }
+
+  def extractExpressionArrayInsert(arrayInsert: Expression): Seq[Expression] = {
+    throw new UnsupportedOperationException("ArrayInsert not supported.")
+  }
+
+  /** Shim method for usages from GlutenExplainUtils.scala. */
+  def withOperatorIdMap[T](idMap: java.util.Map[QueryPlan[_], Int])(body: => T): T = {
+    body
+  }
+
+  /** Shim method for usages from GlutenExplainUtils.scala. */
+  def getOperatorId(plan: QueryPlan[_]): Option[Int]
+
+  /** Shim method for usages from GlutenExplainUtils.scala. */
+  def setOperatorId(plan: QueryPlan[_], opId: Int): Unit
+
+  /** Shim method for usages from GlutenExplainUtils.scala. */
+  def unsetOperatorId(plan: QueryPlan[_]): Unit
+
+  def isParquetFileEncrypted(fileStatus: LocatedFileStatus, conf: Configuration): Boolean
+
 }

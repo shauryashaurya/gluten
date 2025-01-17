@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (46)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (31)
+   VeloxColumnarToRow (31)
    +- ^ SortExecTransformer (29)
       +- ^ InputIteratorTransformer (28)
          +- ShuffleQueryStage (26), Statistics(X)
@@ -17,14 +17,14 @@ AdaptiveSparkPlan (46)
                                        +- ^ ProjectExecTransformer (13)
                                           +- ^ BroadcastHashJoinExecTransformer LeftSemi BuildRight (12)
                                              :- ^ ProjectExecTransformer (3)
-                                             :  +- ^ NoopFilter (2)
-                                             :     +- ^ Scan parquet (1)
+                                             :  +- ^ FilterExecTransformer (2)
+                                             :     +- ^ ScanTransformer parquet  (1)
                                              +- ^ InputIteratorTransformer (11)
                                                 +- BroadcastQueryStage (9), Statistics(X)
                                                    +- ColumnarBroadcastExchange (8)
                                                       +- ^ ProjectExecTransformer (6)
-                                                         +- ^ NoopFilter (5)
-                                                            +- ^ Scan parquet (4)
+                                                         +- ^ FilterExecTransformer (5)
+                                                            +- ^ ScanTransformer parquet  (4)
 +- == Initial Plan ==
    Sort (45)
    +- Exchange (44)
@@ -42,31 +42,31 @@ AdaptiveSparkPlan (46)
                               +- Scan parquet (35)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [3]: [o_orderkey#X, o_orderdate#X, o_orderpriority#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(o_orderdate), GreaterThanOrEqual(o_orderdate,1993-07-01), LessThan(o_orderdate,1993-10-01)]
 ReadSchema: struct<o_orderkey:bigint,o_orderdate:date,o_orderpriority:string>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [3]: [o_orderkey#X, o_orderdate#X, o_orderpriority#X]
-Arguments: [o_orderkey#X, o_orderdate#X, o_orderpriority#X]
+Arguments: ((isnotnull(o_orderdate#X) AND (o_orderdate#X >= 1993-07-01)) AND (o_orderdate#X < 1993-10-01))
 
 (3) ProjectExecTransformer
 Output [2]: [o_orderkey#X, o_orderpriority#X]
 Input [3]: [o_orderkey#X, o_orderdate#X, o_orderpriority#X]
 
-(4) Scan parquet
+(4) ScanTransformer parquet 
 Output [3]: [l_orderkey#X, l_commitdate#X, l_receiptdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_commitdate), IsNotNull(l_receiptdate)]
 ReadSchema: struct<l_orderkey:bigint,l_commitdate:date,l_receiptdate:date>
 
-(5) NoopFilter
+(5) FilterExecTransformer
 Input [3]: [l_orderkey#X, l_commitdate#X, l_receiptdate#X]
-Arguments: [l_orderkey#X, l_commitdate#X, l_receiptdate#X]
+Arguments: ((isnotnull(l_commitdate#X) AND isnotnull(l_receiptdate#X)) AND (l_commitdate#X < l_receiptdate#X))
 
 (6) ProjectExecTransformer
 Output [1]: [l_orderkey#X]
@@ -170,7 +170,7 @@ Arguments: [o_orderpriority#X ASC NULLS FIRST], true, 0
 Input [2]: [o_orderpriority#X, order_count#X]
 Arguments: false
 
-(31) VeloxColumnarToRowExec
+(31) VeloxColumnarToRow
 Input [2]: [o_orderpriority#X, order_count#X]
 
 (32) Scan parquet

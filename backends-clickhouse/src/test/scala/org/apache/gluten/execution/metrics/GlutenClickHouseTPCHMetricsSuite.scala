@@ -16,13 +16,15 @@
  */
 package org.apache.gluten.execution.metrics
 
+import org.apache.gluten.backendsapi.clickhouse.RuntimeConfig
 import org.apache.gluten.execution._
-import org.apache.gluten.extension.GlutenPlan
-import org.apache.gluten.vectorized.GeneralInIterator
+import org.apache.gluten.execution.GlutenPlan
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.catalyst.expressions.Attribute
-import org.apache.spark.sql.execution.InputIteratorTransformer
+import org.apache.spark.sql.execution.{ColumnarInputAdapter, InputIteratorTransformer}
+import org.apache.spark.sql.execution.adaptive.BroadcastQueryStageExec
+import org.apache.spark.sql.execution.exchange.BroadcastExchangeLike
 import org.apache.spark.task.TaskResources
 
 import scala.collection.JavaConverters._
@@ -32,8 +34,7 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
   override protected val needCopyParquetToTablePath = true
 
   override protected val tablesPath: String = basePath + "/tpch-data"
-  override protected val tpchQueries: String =
-    rootPath + "../../../../gluten-core/src/test/resources/tpch-queries"
+  override protected val tpchQueries: String = rootPath + "queries/tpch-queries-ch"
   override protected val queriesResults: String = rootPath + "queries-output"
 
   protected val metricsJsonFilePath: String = rootPath + "metrics-json"
@@ -42,18 +43,17 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
   // scalastyle:off line.size.limit
   /** Run Gluten + ClickHouse Backend with SortShuffleManager */
   override protected def sparkConf: SparkConf = {
+    import org.apache.gluten.backendsapi.clickhouse.CHConf._
+
     super.sparkConf
       .set("spark.shuffle.manager", "org.apache.spark.shuffle.sort.ColumnarShuffleManager")
       .set("spark.io.compression.codec", "LZ4")
       .set("spark.sql.shuffle.partitions", "1")
       .set("spark.sql.autoBroadcastJoinThreshold", "10MB")
-      // .set("spark.gluten.sql.columnar.backend.ch.runtime_config.logger.level", "DEBUG")
-      .set(
-        "spark.gluten.sql.columnar.backend.ch.runtime_settings.input_format_parquet_max_block_size",
-        s"$parquetMaxBlockSize")
-      .set(
-        "spark.gluten.sql.columnar.backend.ch.runtime_config.enable_streaming_aggregating",
-        "true")
+      .set(RuntimeConfig.LOGGER_LEVEL.key, "error")
+      .setCHSettings("input_format_parquet_max_block_size", parquetMaxBlockSize)
+      .setCHConfig("enable_pre_projection_for_join_conditions", "false")
+      .setCHConfig("enable_streaming_aggregating", true)
   }
   // scalastyle:on line.size.limit
 
@@ -103,8 +103,8 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
           case scanExec: BasicScanExecTransformer => scanExec
         }
         assert(plans.size == 1)
-        // 1 block keep in SubstraitFileStep, and 4 blocks keep in other steps
-        assert(plans.head.metrics("numOutputRows").value === 5 * parquetMaxBlockSize)
+        // the value is different from multiple versions of spark
+        assert(plans.head.metrics("numOutputRows").value % parquetMaxBlockSize == 0)
         assert(plans.head.metrics("outputVectors").value === 1)
         assert(plans.head.metrics("outputBytes").value > 0)
     }
@@ -154,7 +154,7 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
 
   test("test tpch wholestage execute") {
     TaskResources.runUnsafe {
-      val inBatchIters = new java.util.ArrayList[GeneralInIterator](0)
+      val inBatchIters = new java.util.ArrayList[ColumnarNativeIterator](0)
       val outputAttributes = new java.util.ArrayList[Attribute](0)
       val nativeMetricsList = GlutenClickHouseMetricsUTUtils
         .executeSubstraitPlan(
@@ -314,7 +314,7 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
 
   test("GLUTEN-1754: test agg func covar_samp, covar_pop final stage execute") {
     TaskResources.runUnsafe {
-      val inBatchIters = new java.util.ArrayList[GeneralInIterator](0)
+      val inBatchIters = new java.util.ArrayList[ColumnarNativeIterator](0)
       val outputAttributes = new java.util.ArrayList[Attribute](0)
       val nativeMetricsList = GlutenClickHouseMetricsUTUtils
         .executeSubstraitPlan(
@@ -360,6 +360,7 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
 
       assert(nativeMetricsData.metricsDataList.get(3).getName.equals("kProject"))
       assert(nativeMetricsData.metricsDataList.get(4).getName.equals("kAggregate"))
+
       assert(
         nativeMetricsData.metricsDataList
           .get(4)
@@ -368,25 +369,33 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
           .getProcessors
           .get(0)
           .getInputRows == 591673)
-      assert(
-        nativeMetricsData.metricsDataList
-          .get(4)
-          .getSteps
-          .get(0)
-          .getProcessors
-          .get(0)
-          .getOutputRows == 4)
 
       assert(
         nativeMetricsData.metricsDataList
           .get(4)
           .getSteps
+          .get(1)
+          .getName
+          .equals("StreamingAggregating"))
+      assert(
+        nativeMetricsData.metricsDataList
+          .get(4)
+          .getSteps
+          .get(1)
+          .getProcessors
           .get(0)
+          .getName
+          .equals("StreamingAggregatingTransform"))
+      assert(
+        nativeMetricsData.metricsDataList
+          .get(4)
+          .getSteps
+          .get(1)
           .getProcessors
           .get(0)
           .getOutputRows == 4)
 
-      val inBatchItersFinal = new java.util.ArrayList[GeneralInIterator](
+      val inBatchItersFinal = new java.util.ArrayList[ColumnarNativeIterator](
         Array(0).map(iter => new ColumnarNativeIterator(Iterator.empty.asJava)).toSeq.asJava)
       val outputAttributesFinal = new java.util.ArrayList[Attribute](0)
 
@@ -415,6 +424,41 @@ class GlutenClickHouseTPCHMetricsSuite extends GlutenClickHouseTPCHAbstractSuite
       assert(
         nativeMetricsDataFinal.metricsDataList.get(1).getSteps.get(1).getName.equals("Expression"))
       assert(nativeMetricsDataFinal.metricsDataList.get(2).getName.equals("kProject"))
+    }
+  }
+
+  test("Metrics for input iterator of broadcast exchange") {
+    createTPCHNotNullTables()
+    val partTableRecords = spark.sql("select * from part").count()
+
+    // Repartition to make sure we have multiple tasks executing the join.
+    spark
+      .sql("select * from lineitem")
+      .repartition(2)
+      .createOrReplaceTempView("lineitem")
+
+    Seq("true", "false").foreach {
+      adaptiveEnabled =>
+        withSQLConf("spark.sql.adaptive.enabled" -> adaptiveEnabled) {
+          val sqlStr =
+            """
+              |select /*+ BROADCAST(part) */ * from part join lineitem
+              |on l_partkey = p_partkey
+              |""".stripMargin
+
+          runQueryAndCompare(sqlStr) {
+            df =>
+              val inputIterator = find(df.queryExecution.executedPlan) {
+                case InputIteratorTransformer(ColumnarInputAdapter(child)) =>
+                  child.isInstanceOf[BroadcastQueryStageExec] || child
+                    .isInstanceOf[BroadcastExchangeLike]
+                case _ => false
+              }
+              assert(inputIterator.isDefined)
+              val metrics = inputIterator.get.metrics
+              assert(metrics("numOutputRows").value == partTableRecords)
+          }
+        }
     }
   }
 }

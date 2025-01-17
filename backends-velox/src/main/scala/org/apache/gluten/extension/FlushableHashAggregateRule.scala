@@ -16,13 +16,14 @@
  */
 package org.apache.gluten.extension
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution._
 
 import org.apache.spark.sql.SparkSession
 import org.apache.spark.sql.catalyst.expressions.aggregate.{Partial, PartialMerge}
 import org.apache.spark.sql.catalyst.plans.physical.ClusteredDistribution
 import org.apache.spark.sql.catalyst.rules.Rule
+import org.apache.spark.sql.catalyst.trees.TreePattern.EXCHANGE
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 
@@ -33,10 +34,10 @@ import org.apache.spark.sql.execution.exchange.ShuffleExchangeLike
 case class FlushableHashAggregateRule(session: SparkSession) extends Rule[SparkPlan] {
   import FlushableHashAggregateRule._
   override def apply(plan: SparkPlan): SparkPlan = {
-    if (!GlutenConfig.getConf.enableVeloxFlushablePartialAggregation) {
+    if (!GlutenConfig.get.enableVeloxFlushablePartialAggregation) {
       return plan
     }
-    plan.transformUp {
+    plan.transformUpWithPruning(_.containsPattern(EXCHANGE)) {
       case s: ShuffleExchangeLike =>
         // If an exchange follows a hash aggregate in which all functions are in partial mode,
         // then it's safe to convert the hash aggregate to flushable hash aggregate.

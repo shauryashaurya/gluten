@@ -27,6 +27,9 @@ github:
     - spark-sql
     - vectorization
     - velox
+  collaborators:
+    - majetideepak
+    - pedroerp
   enabled_merge_buttons:
     squash: true
     merge: false
@@ -34,7 +37,7 @@ github:
   protected_branches:
     main:
       required_pull_request_reviews:
-        dismiss_stale_reviews: true
+        dismiss_stale_reviews: false
         required_approving_review_count: 1
       required_signatures: false
       required_linear_history: true
@@ -48,3 +51,4 @@ notifications:
   commits: commits@gluten.apache.org
   issues: commits@gluten.apache.org
   pullrequests: commits@gluten.apache.org
+  discussions: commits@gluten.apache.org

@@ -16,32 +16,38 @@
  */
 package org.apache.gluten.backendsapi.clickhouse
 
-import org.apache.gluten.GlutenNumaBindingInfo
 import org.apache.gluten.backendsapi.IteratorApi
+import org.apache.gluten.config.GlutenNumaBindingInfo
 import org.apache.gluten.execution._
 import org.apache.gluten.expression.ConverterUtils
-import org.apache.gluten.memory.CHThreadGroup
-import org.apache.gluten.metrics.{IMetrics, NativeMetrics}
+import org.apache.gluten.logging.LogLevelUtil
+import org.apache.gluten.metrics.IMetrics
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.plan.PlanNode
 import org.apache.gluten.substrait.rel._
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
-import org.apache.gluten.utils.LogLevelUtil
-import org.apache.gluten.vectorized.{BatchIterator, CHNativeExpressionEvaluator, CloseableCHColumnBatchIterator, GeneralInIterator}
+import org.apache.gluten.vectorized.{BatchIterator, CHNativeExpressionEvaluator, CloseableCHColumnBatchIterator}
 
 import org.apache.spark.{InterruptibleIterator, SparkConf, TaskContext}
 import org.apache.spark.affinity.CHAffinity
 import org.apache.spark.executor.InputMetrics
 import org.apache.spark.internal.Logging
+import org.apache.spark.shuffle.CHColumnarShuffleWriter
+import org.apache.spark.sql.catalyst.catalog.ExternalCatalogUtils
+import org.apache.spark.sql.catalyst.util.{DateFormatter, TimestampFormatter}
 import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.execution.datasources.FilePartition
+import org.apache.spark.sql.execution.datasources.clickhouse.{ExtensionTableBuilder, ExtensionTableNode}
+import org.apache.spark.sql.execution.datasources.mergetree.PartSerializer
 import org.apache.spark.sql.execution.metric.SQLMetric
-import org.apache.spark.sql.types.{StructField, StructType}
+import org.apache.spark.sql.types._
 import org.apache.spark.sql.utils.SparkInputMetricsUtil.InputMetricsWrapper
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import java.lang.{Long => JLong}
 import java.net.URI
+import java.nio.charset.StandardCharsets
+import java.time.ZoneOffset
 import java.util.{ArrayList => JArrayList, HashMap => JHashMap, Map => JMap}
 
 import scala.collection.JavaConverters._
@@ -76,7 +82,7 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
           case i: CloseableCHColumnBatchIterator => i
           case it => new CloseableCHColumnBatchIterator(it)
         }
-        .map(it => new ColumnarNativeIterator(it.asJava).asInstanceOf[GeneralInIterator])
+        .map(it => new ColumnarNativeIterator(it.asJava))
         .asJava
     CHNativeExpressionEvaluator.createKernelWithBatchIterator(
       wsPlan,
@@ -100,12 +106,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       updateInputMetrics,
       updateInputMetrics.map(_ => context.taskMetrics().inputMetrics).orNull)
 
-    context.addTaskFailureListener(
-      (ctx, _) => {
-        if (ctx.isInterrupted()) {
-          iter.cancel()
-        }
-      })
+    context.addTaskFailureListener((ctx, _) => { iter.cancel() })
+
     context.addTaskCompletionListener[Unit](_ => iter.close())
     new CloseableCHColumnBatchIterator(iter, Some(pipelineTime))
   }
@@ -129,20 +131,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       properties: Map[String, String]): SplitInfo = {
     partition match {
       case p: GlutenMergeTreePartition =>
-        val partLists = new JArrayList[String]()
-        val starts = new JArrayList[JLong]()
-        val lengths = new JArrayList[JLong]()
-        p.partList
-          .foreach(
-            parts => {
-              partLists.add(parts.name)
-              starts.add(parts.start)
-              lengths.add(parts.length)
-            })
         ExtensionTableBuilder
           .makeExtensionTable(
-            -1L,
-            -1L,
             p.database,
             p.table,
             p.snapshotId,
@@ -154,10 +144,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
             p.bfIndexKey,
             p.setIndexKey,
             p.primaryKey,
-            partLists,
-            starts,
-            lengths,
-            p.tableSchemaJson,
+            PartSerializer.fromMergeTreePartSplits(p.partList.toSeq),
+            p.tableSchema,
             p.clickhouseTableConfigs.asJava,
             CHAffinity.getNativeMergeTreePartitionLocations(p).toList.asJava
           )
@@ -168,14 +156,41 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
         val fileSizes = new JArrayList[JLong]()
         val modificationTimes = new JArrayList[JLong]()
         val partitionColumns = new JArrayList[JMap[String, String]]
+        val metadataColumns = new JArrayList[JMap[String, String]]
         f.files.foreach {
           file =>
             paths.add(new URI(file.filePath.toString()).toASCIIString)
             starts.add(JLong.valueOf(file.start))
             lengths.add(JLong.valueOf(file.length))
-            // TODO: Support custom partition location
+            val metadataColumn =
+              SparkShimLoader.getSparkShims.generateMetadataColumns(file, metadataColumnNames)
+            metadataColumns.add(metadataColumn)
             val partitionColumn = new JHashMap[String, String]()
+            for (i <- 0 until file.partitionValues.numFields) {
+              val partitionColumnValue = if (file.partitionValues.isNullAt(i)) {
+                ExternalCatalogUtils.DEFAULT_PARTITION_NAME
+              } else {
+                val pn = file.partitionValues.get(i, partitionSchema.fields(i).dataType)
+                partitionSchema.fields(i).dataType match {
+                  case _: BinaryType =>
+                    new String(pn.asInstanceOf[Array[Byte]], StandardCharsets.UTF_8)
+                  case _: DateType =>
+                    DateFormatter.apply().format(pn.asInstanceOf[Integer])
+                  case _: DecimalType =>
+                    pn.asInstanceOf[Decimal].toJavaBigInteger.toString
+                  case _: TimestampType =>
+                    TimestampFormatter
+                      .getFractionFormatter(ZoneOffset.UTC)
+                      .format(pn.asInstanceOf[java.lang.Long])
+                  case _ => pn.toString
+                }
+              }
+              partitionColumn.put(
+                ConverterUtils.normalizeColName(partitionSchema.names(i)),
+                partitionColumnValue)
+            }
             partitionColumns.add(partitionColumn)
+
             val (fileSize, modificationTime) =
               SparkShimLoader.getSparkShims.getFileSizeAndModificationTime(file)
             (fileSize, modificationTime) match {
@@ -197,7 +212,7 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
           fileSizes,
           modificationTimes,
           partitionColumns,
-          new JArrayList[JMap[String, String]](),
+          metadataColumns,
           fileFormat,
           preferredLocations.toList.asJava,
           mapAsJavaMap(properties)
@@ -220,27 +235,23 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
     val planByteArray = wsCtx.root.toProtobuf.toByteArray
     splitInfos.zipWithIndex.map {
       case (splits, index) =>
-        val files = ArrayBuffer[String]()
-        val splitInfosByteArray = splits.zipWithIndex.map {
+        val (splitInfosByteArray, files) = splits.zipWithIndex.map {
           case (split, i) =>
             split match {
               case filesNode: LocalFilesNode =>
                 setFileSchemaForLocalFiles(filesNode, scans(i))
-                filesNode.getPaths.forEach(f => files += f)
-                filesNode.toProtobuf.toByteArray
+                (filesNode.toProtobuf.toByteArray, filesNode.getPaths.asScala.toSeq)
               case extensionTableNode: ExtensionTableNode =>
-                extensionTableNode.getPartList.forEach(
-                  name => files += extensionTableNode.getAbsolutePath + "/" + name)
-                extensionTableNode.toProtobuf.toByteArray
+                (extensionTableNode.toProtobuf.toByteArray, extensionTableNode.getPartList)
             }
-        }
+        }.unzip
 
         GlutenPartition(
           index,
           planByteArray,
           splitInfosByteArray.toArray,
           locations = splits.flatMap(_.preferredLocations().asScala).toArray,
-          files.toArray
+          files.flatten.toArray
         )
     }
   }
@@ -307,10 +318,6 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       createNativeIterator(splitInfoByteArray, wsPlan, materializeInput, inputIterators))
   }
 
-  override def injectWriteFilesTempPath(path: String, fileName: String): Unit = {
-    CHThreadGroup.registerNewThreadGroup()
-    CHNativeExpressionEvaluator.injectWriteFilesTempPath(path, fileName)
-  }
 }
 
 class CollectMetricIterator(
@@ -322,8 +329,12 @@ class CollectMetricIterator(
   private var outputRowCount = 0L
   private var outputVectorCount = 0L
   private var metricsUpdated = false
+  // Whether the stage is executed completely using ClickHouse pipeline.
+  private var wholeStagePipeline = true
 
   override def hasNext: Boolean = {
+    // The hasNext call is triggered only when there is a fallback.
+    wholeStagePipeline = false
     nativeIterator.hasNext
   }
 
@@ -346,7 +357,12 @@ class CollectMetricIterator(
 
   private def collectStageMetrics(): Unit = {
     if (!metricsUpdated) {
-      val nativeMetrics = nativeIterator.getMetrics.asInstanceOf[NativeMetrics]
+      val nativeMetrics = nativeIterator.getMetrics
+      if (wholeStagePipeline) {
+        outputRowCount = Math.max(outputRowCount, CHColumnarShuffleWriter.getTotalOutputRows)
+        outputVectorCount =
+          Math.max(outputVectorCount, CHColumnarShuffleWriter.getTotalOutputBatches)
+      }
       nativeMetrics.setFinalOutputMetrics(outputRowCount, outputVectorCount)
       updateNativeMetrics(nativeMetrics)
       updateInputMetrics.foreach(_(inputMetrics))

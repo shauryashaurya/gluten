@@ -16,7 +16,7 @@
  */
 package org.apache.gluten.expressions
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.ProjectExecTransformer
 import org.apache.gluten.expression.ExpressionMappings
 import org.apache.gluten.utils.{BackendTestUtils, SystemParameters}
@@ -91,6 +91,24 @@ class GlutenExpressionMappingSuite
       withTable("t") {
         val df = spark.sql("SELECT regexp_replace(c, '(\\d+)', 'something')  FROM t")
         assert(find(df.queryExecution.executedPlan)(_.isInstanceOf[ProjectExecTransformer]).isEmpty)
+      }
+    }
+  }
+
+  testWithSpecifiedSparkVersion(
+    "GLUTEN-7213: Check fallback reason with CheckOverflowInTableInsert",
+    Some("3.4")) {
+    withSQLConf(GlutenConfig.RAS_ENABLED.key -> "false") {
+      withTable("t1", "t2") {
+        sql("create table t1 (a float) using parquet")
+        sql("insert into t1 values(1.1)")
+        sql("create table t2 (b decimal(10,4)) using parquet")
+
+        val msg =
+          "CheckOverflowInTableInsert is used in ANSI mode, but Gluten does not support ANSI mode."
+        import org.apache.spark.sql.execution.GlutenImplicits._
+        val fallbackSummary = sql("insert overwrite t2 select * from t1").fallbackSummary()
+        assert(fallbackSummary.fallbackNodeToReason.flatMap(_.values).exists(_.contains(msg)))
       }
     }
   }

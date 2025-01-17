@@ -16,15 +16,14 @@
  */
 package org.apache.gluten.backendsapi.clickhouse
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.{BackendsApiManager, SparkPlanExecApi}
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.exception.{GlutenException, GlutenNotSupportException}
 import org.apache.gluten.execution._
 import org.apache.gluten.expression._
+import org.apache.gluten.expression.ExpressionNames.MONOTONICALLY_INCREASING_ID
 import org.apache.gluten.extension.ExpressionExtensionTrait
-import org.apache.gluten.extension.columnar.AddFallbackTagRule
-import org.apache.gluten.extension.columnar.MiscColumnarRules.TransformPreOverrides
-import org.apache.gluten.extension.columnar.transition.Convention
+import org.apache.gluten.extension.columnar.heuristic.HeuristicTransform
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.expression.{ExpressionBuilder, ExpressionNode, WindowFunctionNode}
 import org.apache.gluten.utils.{CHJoinValidateUtil, UnknownJoinStrategy}
@@ -53,6 +52,7 @@ import org.apache.spark.sql.execution.exchange.{BroadcastExchangeExec, ShuffleEx
 import org.apache.spark.sql.execution.joins.{BuildSideRelation, ClickHouseBuildSideRelation, HashedRelationBroadcastMode}
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.utils.{CHExecUtil, PushDownUtil}
+import org.apache.spark.sql.execution.window._
 import org.apache.spark.sql.types.{DecimalType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -65,9 +65,6 @@ import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 
 class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
-
-  /** The columnar-batch type this backend is using. */
-  override def batchType: Convention.BatchType = CHBatch
 
   /** Transform GetArrayItem to Substrait. */
   override def genGetArrayItemTransformer(
@@ -160,16 +157,21 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
       aggregateAttributes: Seq[Attribute],
       initialInputBufferOffset: Int,
       resultExpressions: Seq[NamedExpression],
-      child: SparkPlan): HashAggregateExecBaseTransformer =
+      child: SparkPlan): HashAggregateExecBaseTransformer = {
+    val replacedResultExpressions = CHHashAggregateExecTransformer.getCHAggregateResultExpressions(
+      groupingExpressions,
+      aggregateExpressions,
+      resultExpressions)
     CHHashAggregateExecTransformer(
       requiredChildDistributionExpressions,
-      groupingExpressions.distinct,
+      groupingExpressions,
       aggregateExpressions,
       aggregateAttributes,
       initialInputBufferOffset,
-      resultExpressions.distinct,
+      replacedResultExpressions,
       child
     )
+  }
 
   /** Generate HashAggregateExecPullOutHelper */
   override def genHashAggregateExecPullOutHelper(
@@ -221,9 +223,10 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
         }
         // FIXME: The operation happens inside ReplaceSingleNode().
         //  Caller may not know it adds project on top of the shuffle.
-        val project = TransformPreOverrides().apply(
-          AddFallbackTagRule().apply(
-            ProjectExec(plan.child.output ++ projectExpressions, plan.child)))
+        // FIXME: HeuristicTransform is costly. Re-applying it may cause performance issues.
+        val project =
+          HeuristicTransform.static()(
+            ProjectExec(plan.child.output ++ projectExpressions, plan.child))
         var newExprs = Seq[Expression]()
         for (i <- exprs.indices) {
           val pos = newExpressionsPosition(i)
@@ -246,9 +249,10 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
         }
         // FIXME: The operation happens inside ReplaceSingleNode().
         //  Caller may not know it adds project on top of the shuffle.
-        val project = TransformPreOverrides().apply(
-          AddFallbackTagRule().apply(
-            ProjectExec(plan.child.output ++ projectExpressions, plan.child)))
+        // FIXME: HeuristicTransform is costly. Re-applying it may cause performance issues.
+        val project =
+          HeuristicTransform.static()(
+            ProjectExec(plan.child.output ++ projectExpressions, plan.child))
         var newOrderings = Seq[SortOrder]()
         for (i <- orderings.indices) {
           val oldOrdering = orderings(i)
@@ -269,9 +273,7 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
 
   override def genColumnarShuffleExchange(shuffle: ShuffleExchangeExec): SparkPlan = {
     val child = shuffle.child
-    if (
-      BackendsApiManager.getSettings.supportShuffleWithProject(shuffle.outputPartitioning, child)
-    ) {
+    if (CHValidatorApi.supportShuffleWithProject(shuffle.outputPartitioning, child)) {
       val (projectColumnNumber, newPartitioning, newChild) =
         addProjectionForShuffleExchange(shuffle)
 
@@ -361,15 +363,10 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
       left: SparkPlan,
       right: SparkPlan,
       condition: Option[Expression]): CartesianProductExecTransformer =
-    if (!condition.isEmpty) {
-      throw new GlutenNotSupportException(
-        "CartesianProductExecTransformer with condition is not supported in ch backend.")
-    } else {
-      CartesianProductExecTransformer(
-        ColumnarCartesianProductBridge(left),
-        ColumnarCartesianProductBridge(right),
-        condition)
-    }
+    CartesianProductExecTransformer(
+      ColumnarCartesianProductBridge(left),
+      ColumnarCartesianProductBridge(right),
+      condition)
 
   override def genBroadcastNestedLoopJoinExecTransformer(
       left: SparkPlan,
@@ -455,12 +452,12 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
     val readBatchNumRows = metrics("avgReadBatchNumRows")
     val numOutputRows = metrics("numOutputRows")
     val dataSize = metrics("dataSize")
-    if (GlutenConfig.getConf.isUseCelebornShuffleManager) {
+    if (GlutenConfig.get.isUseCelebornShuffleManager) {
       val clazz = ClassUtils.getClass("org.apache.spark.shuffle.CHCelebornColumnarBatchSerializer")
       val constructor =
         clazz.getConstructor(classOf[SQLMetric], classOf[SQLMetric], classOf[SQLMetric])
       constructor.newInstance(readBatchNumRows, numOutputRows, dataSize).asInstanceOf[Serializer]
-    } else if (GlutenConfig.getConf.isUseUniffleShuffleManager) {
+    } else if (GlutenConfig.get.isUseUniffleShuffleManager) {
       throw new UnsupportedOperationException("temporarily uniffle not support ch ")
     } else {
       new CHColumnarBatchSerializer(readBatchNumRows, numOutputRows, dataSize)
@@ -474,12 +471,12 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
       numOutputRows: SQLMetric,
       dataSize: SQLMetric): BuildSideRelation = {
 
-    val buildKeys: Seq[Expression] = mode match {
+    val (buildKeys, isNullAware) = mode match {
       case mode1: HashedRelationBroadcastMode =>
-        mode1.key
+        (mode1.key, mode1.isNullAware)
       case _ =>
         // IdentityBroadcastMode
-        Seq.empty
+        (Seq.empty, false)
     }
 
     val (newChild, newOutput, newBuildKeys) =
@@ -532,8 +529,27 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
         }
         (newChild, (child.output ++ appendedProjections).map(_.toAttribute), preProjectionBuildKeys)
       }
+
+    // find the key index in the output
+    val keyColumnIndex = if (isNullAware) {
+      def findKeyOrdinal(key: Expression, output: Seq[Attribute]): Int = {
+        key match {
+          case b: BoundReference => b.ordinal
+          case n: NamedExpression =>
+            output.indexWhere(o => (o.name.equals(n.name) && o.exprId == n.exprId))
+          case _ => throw new GlutenException(s"Cannot find $key in the child's output: $output")
+        }
+      }
+      if (newBuildKeys.isEmpty) {
+        findKeyOrdinal(buildKeys(0), newOutput)
+      } else {
+        findKeyOrdinal(newBuildKeys(0), newOutput)
+      }
+    } else {
+      0
+    }
     val countsAndBytes =
-      CHExecUtil.buildSideRDD(dataSize, newChild).collect
+      CHExecUtil.buildSideRDD(dataSize, newChild, isNullAware, keyColumnIndex).collect
 
     val batches = countsAndBytes.map(_._2)
     val totalBatchesSize = batches.map(_.length).sum
@@ -548,15 +564,23 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
           s" written bytes is correct.")
     }
     val rowCount = countsAndBytes.map(_._1).sum
+    val hasNullKeyValues = countsAndBytes.map(_._3).foldLeft[Boolean](false)((b, a) => { b || a })
     numOutputRows += rowCount
-    ClickHouseBuildSideRelation(mode, newOutput, batches.flatten, rowCount, newBuildKeys)
+    ClickHouseBuildSideRelation(
+      mode,
+      newOutput,
+      batches.flatten,
+      rowCount,
+      newBuildKeys,
+      hasNullKeyValues)
   }
 
   /** Define backend specfic expression mappings. */
   override def extraExpressionMappings: Seq[Sig] = {
     List(
       Sig[CollectList](ExpressionNames.COLLECT_LIST),
-      Sig[CollectSet](ExpressionNames.COLLECT_SET)
+      Sig[CollectSet](ExpressionNames.COLLECT_SET),
+      Sig[MonotonicallyIncreasingID](MONOTONICALLY_INCREASING_ID)
     ) ++
       ExpressionExtensionTrait.expressionExtensionTransformer.expressionSigList ++
       SparkShimLoader.getSparkShims.bloomFilterExpressionMappings()
@@ -632,7 +656,7 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
   }
 
   override def createColumnarWriteFilesExec(
-      child: SparkPlan,
+      child: WriteFilesExecTransformer,
       noop: SparkPlan,
       fileFormat: FileFormat,
       partitionColumns: Seq[Attribute],
@@ -642,6 +666,7 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
     CHColumnarWriteFilesExec(
       child,
       noop,
+      child,
       fileFormat,
       partitionColumns,
       bucketSpec,
@@ -819,7 +844,7 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
     // Let's make push down functionally same as vanilla Spark for now.
 
     sparkExecNode match {
-      case fileSourceScan: FileSourceScanExec
+      case fileSourceScan: FileSourceScanExecTransformerBase
           if isParquetFormat(fileSourceScan.relation.fileFormat) =>
         PushDownUtil.removeNotSupportPushDownFilters(
           fileSourceScan.conf,
@@ -883,4 +908,27 @@ class CHSparkPlanExecApi extends SparkPlanExecApi with Logging {
       toScale: Int): DecimalType = {
     SparkShimLoader.getSparkShims.genDecimalRoundExpressionOutput(decimalType, toScale)
   }
+
+  override def genWindowGroupLimitTransformer(
+      partitionSpec: Seq[Expression],
+      orderSpec: Seq[SortOrder],
+      rankLikeFunction: Expression,
+      limit: Int,
+      mode: WindowGroupLimitMode,
+      child: SparkPlan): SparkPlan =
+    CHWindowGroupLimitExecTransformer(
+      partitionSpec,
+      orderSpec,
+      rankLikeFunction,
+      limit,
+      mode,
+      child)
+
+  override def genStringSplitTransformer(
+      substraitExprName: String,
+      srcExpr: ExpressionTransformer,
+      regexExpr: ExpressionTransformer,
+      limitExpr: ExpressionTransformer,
+      original: StringSplit): ExpressionTransformer =
+    CHStringSplitTransformer(substraitExprName, Seq(srcExpr, regexExpr, limitExpr), original)
 }

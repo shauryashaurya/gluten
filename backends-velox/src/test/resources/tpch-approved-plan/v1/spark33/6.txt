@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (20)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (13)
+   VeloxColumnarToRow (13)
    +- ^ RegularHashAggregateExecTransformer (11)
       +- ^ InputIteratorTransformer (10)
          +- ShuffleQueryStage (8), Statistics(X)
@@ -10,7 +10,7 @@ AdaptiveSparkPlan (20)
                   +- ^ FlushableHashAggregateExecTransformer (4)
                      +- ^ ProjectExecTransformer (3)
                         +- ^ FilterExecTransformer (2)
-                           +- ^ Scan parquet (1)
+                           +- ^ ScanTransformer parquet  (1)
 +- == Initial Plan ==
    HashAggregate (19)
    +- Exchange (18)
@@ -20,7 +20,7 @@ AdaptiveSparkPlan (20)
                +- Scan parquet (14)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [4]: [l_quantity#X, l_extendedprice#X, l_discount#X, l_shipdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -32,11 +32,11 @@ Input [4]: [l_quantity#X, l_extendedprice#X, l_discount#X, l_shipdate#X]
 Arguments: (((((((isnotnull(l_shipdate#X) AND isnotnull(l_discount#X)) AND isnotnull(l_quantity#X)) AND (l_shipdate#X >= 1994-01-01)) AND (l_shipdate#X < 1995-01-01)) AND (l_discount#X >= 0.05)) AND (l_discount#X <= 0.07)) AND (l_quantity#X < 24.00))
 
 (3) ProjectExecTransformer
-Output [3]: [l_extendedprice#X, l_discount#X, CheckOverflow((promote_precision(l_extendedprice#X) * promote_precision(l_discount#X)), DecimalType(25,4)) AS _pre_X#X]
+Output [1]: [CheckOverflow((promote_precision(l_extendedprice#X) * promote_precision(l_discount#X)), DecimalType(25,4)) AS _pre_X#X]
 Input [4]: [l_quantity#X, l_extendedprice#X, l_discount#X, l_shipdate#X]
 
 (4) FlushableHashAggregateExecTransformer
-Input [3]: [l_extendedprice#X, l_discount#X, _pre_X#X]
+Input [1]: [_pre_X#X]
 Keys: []
 Functions [1]: [partial_sum(_pre_X#X)]
 Aggregate Attributes [2]: [sum#X, isEmpty#X]
@@ -75,7 +75,7 @@ Results [1]: [sum(CheckOverflow((promote_precision(l_extendedprice#X) * promote_
 Input [1]: [revenue#X]
 Arguments: false
 
-(13) VeloxColumnarToRowExec
+(13) VeloxColumnarToRow
 Input [1]: [revenue#X]
 
 (14) Scan parquet

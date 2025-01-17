@@ -16,19 +16,21 @@
  */
 package org.apache.gluten.memory.memtarget;
 
-import org.apache.gluten.GlutenConfig;
+import org.apache.gluten.config.GlutenConfig;
 
+import org.apache.spark.annotation.Experimental;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.util.concurrent.atomic.AtomicLong;
 
+@Experimental
 public class DynamicOffHeapSizingMemoryTarget implements MemoryTarget {
   private static final Logger LOG = LoggerFactory.getLogger(DynamicOffHeapSizingMemoryTarget.class);
   private final MemoryTarget delegated;
   // When dynamic off-heap sizing is enabled, the off-heap should be sized for the total usable
   // memory, so we can use it as the max memory we will use.
-  private static final long MAX_MEMORY_IN_BYTES = GlutenConfig.getConf().offHeapMemorySize();
+  private static final long MAX_MEMORY_IN_BYTES = GlutenConfig.get().offHeapMemorySize();
   private static final AtomicLong USED_OFFHEAP_BYTES = new AtomicLong();
 
   public DynamicOffHeapSizingMemoryTarget(MemoryTarget delegated) {

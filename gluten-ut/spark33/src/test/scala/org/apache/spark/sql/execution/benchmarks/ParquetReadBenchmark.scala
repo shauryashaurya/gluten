@@ -16,7 +16,7 @@
  */
 package org.apache.spark.sql.execution.benchmarks
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.{FileSourceScanExecTransformer, WholeStageTransformer}
 import org.apache.gluten.extension.columnar.transition.Transitions
 import org.apache.gluten.jni.JniLibLoader
@@ -70,7 +70,6 @@ object ParquetReadBenchmark extends SqlBasedBenchmark {
       .set("spark.memory.offHeap.enabled", "true")
       .setIfMissing("spark.memory.offHeap.size", offheapSize)
       .setIfMissing("spark.sql.columnVector.offheap.enabled", "true")
-      .set("spark.gluten.sql.columnar.columnarToRow", "true")
       .set("spark.sql.adaptive.enabled", "false")
       .setIfMissing("spark.driver.memory", memorySize)
       .setIfMissing("spark.executor.memory", memorySize)

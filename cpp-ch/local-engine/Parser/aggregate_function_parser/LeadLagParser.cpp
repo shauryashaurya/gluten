@@ -15,15 +15,15 @@
  * limitations under the License.
  */
 #include "LeadLagParser.h"
-#include <Columns/ColumnNullable.h>
+
 #include <DataTypes/DataTypeNullable.h>
-#include <DataTypes/DataTypesNumber.h>
 #include <Interpreters/ActionsDAG.h>
 #include <Common/BlockTypeUtils.h>
 #include <Common/CHUtil.h>
 
 namespace local_engine
 {
+using namespace DB;
 DB::ActionsDAG::NodeRawConstPtrs
 LeadParser::parseFunctionArguments(const CommonFunctionInfo & func_info, DB::ActionsDAG & actions_dag) const
 {

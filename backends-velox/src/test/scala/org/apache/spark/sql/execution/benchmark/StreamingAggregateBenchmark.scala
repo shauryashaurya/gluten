@@ -16,7 +16,7 @@
  */
 package org.apache.spark.sql.execution.benchmark
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.benchmark.Benchmark
 import org.apache.spark.sql.internal.SQLConf
@@ -51,7 +51,7 @@ object StreamingAggregateBenchmark extends SqlBasedBenchmark {
         withSQLConf(
           GlutenConfig.COLUMNAR_PREFER_STREAMING_AGGREGATE.key -> "true",
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-          GlutenConfig.COLUMNAR_FPRCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "false"
+          GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "false"
         ) {
           spark.sql(query).noop()
         }
@@ -62,7 +62,7 @@ object StreamingAggregateBenchmark extends SqlBasedBenchmark {
         withSQLConf(
           GlutenConfig.COLUMNAR_PREFER_STREAMING_AGGREGATE.key -> "false",
           SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "-1",
-          GlutenConfig.COLUMNAR_FPRCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "false"
+          GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key -> "false"
         ) {
           spark.sql(query).noop()
         }

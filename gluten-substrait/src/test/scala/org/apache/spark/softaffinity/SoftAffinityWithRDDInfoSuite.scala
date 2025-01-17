@@ -16,15 +16,14 @@
  */
 package org.apache.spark.softaffinity
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.execution.GlutenPartition
 import org.apache.gluten.softaffinity.{AffinityManager, SoftAffinityManager}
-import org.apache.gluten.softaffinity.scheduler.SoftAffinityListener
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.plan.PlanBuilder
 
 import org.apache.spark.SparkConf
-import org.apache.spark.scheduler.{SparkListenerExecutorAdded, SparkListenerExecutorRemoved, SparkListenerStageCompleted, SparkListenerStageSubmitted, SparkListenerTaskEnd, StageInfo, TaskInfo, TaskLocality}
+import org.apache.spark.scheduler._
 import org.apache.spark.scheduler.cluster.ExecutorInfo
 import org.apache.spark.sql.QueryTest
 import org.apache.spark.sql.catalyst.InternalRow
@@ -50,7 +49,7 @@ class SoftAffinityWithRDDInfoSuite extends QueryTest with SharedSparkSession wit
     .set(GlutenConfig.GLUTEN_SOFT_AFFINITY_DUPLICATE_READING_DETECT_ENABLED, "true")
     .set(GlutenConfig.GLUTEN_SOFT_AFFINITY_REPLICATIONS_NUM, "2")
     .set(GlutenConfig.GLUTEN_SOFT_AFFINITY_MIN_TARGET_HOSTS, "2")
-    .set(GlutenConfig.SOFT_AFFINITY_LOG_LEVEL, "INFO")
+    .set(GlutenConfig.SOFT_AFFINITY_LOG_LEVEL.key, "INFO")
 
   test("Soft Affinity Scheduler with duplicate reading detection") {
     if (SparkShimLoader.getSparkShims.supportDuplicateReadingTracking) {

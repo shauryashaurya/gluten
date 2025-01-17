@@ -16,7 +16,7 @@
  */
 package org.apache.gluten.substrait.rel;
 
-import org.apache.gluten.GlutenConfig;
+import org.apache.gluten.config.GlutenConfig;
 import org.apache.gluten.expression.ConverterUtils;
 
 import io.substrait.proto.NamedStruct;
@@ -90,6 +90,11 @@ public class LocalFilesNode implements SplitInfo {
 
   public List<String> getPaths() {
     return paths;
+  }
+
+  public void setPaths(List<String> newPaths) {
+    paths.clear();
+    paths.addAll(newPaths);
   }
 
   public void setFileSchema(StructType schema) {
@@ -193,7 +198,7 @@ public class LocalFilesNode implements SplitInfo {
           ReadRel.LocalFiles.FileOrFiles.ParquetReadOptions parquetReadOptions =
               ReadRel.LocalFiles.FileOrFiles.ParquetReadOptions.newBuilder()
                   .setEnableRowGroupMaxminIndex(
-                      GlutenConfig.getConf().enableParquetRowGroupMaxMinIndex())
+                      GlutenConfig.get().enableParquetRowGroupMaxMinIndex())
                   .build();
           fileBuilder.setParquet(parquetReadOptions);
           break;
@@ -220,15 +225,15 @@ public class LocalFilesNode implements SplitInfo {
                   .setHeader(Long.parseLong(header))
                   .setEscape(escape)
                   .setNullValue(nullValue)
-                  .setMaxBlockSize(GlutenConfig.getConf().textInputMaxBlockSize())
-                  .setEmptyAsDefault(GlutenConfig.getConf().textIputEmptyAsDefault())
+                  .setMaxBlockSize(GlutenConfig.get().textInputMaxBlockSize())
+                  .setEmptyAsDefault(GlutenConfig.get().textIputEmptyAsDefault())
                   .build();
           fileBuilder.setText(textReadOptions);
           break;
         case JsonReadFormat:
           ReadRel.LocalFiles.FileOrFiles.JsonReadOptions jsonReadOptions =
               ReadRel.LocalFiles.FileOrFiles.JsonReadOptions.newBuilder()
-                  .setMaxBlockSize(GlutenConfig.getConf().textInputMaxBlockSize())
+                  .setMaxBlockSize(GlutenConfig.get().textInputMaxBlockSize())
                   .build();
           fileBuilder.setJson(jsonReadOptions);
           break;

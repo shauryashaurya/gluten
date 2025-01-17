@@ -16,6 +16,21 @@
  */
 package org.apache.spark.sql.execution.joins
 
+import org.apache.gluten.config.GlutenConfig
+
+import org.apache.spark.SparkConf
 import org.apache.spark.sql.GlutenSQLTestsBaseTrait
 
-class GlutenOuterJoinSuite extends OuterJoinSuite with GlutenSQLTestsBaseTrait {}
+class GlutenOuterJoinSuiteForceShjOn extends OuterJoinSuite with GlutenSQLTestsBaseTrait {
+  override def sparkConf: SparkConf = {
+    super.sparkConf
+      .set(GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key, "true")
+  }
+}
+
+class GlutenOuterJoinSuiteForceShjOff extends OuterJoinSuite with GlutenSQLTestsBaseTrait {
+  override def sparkConf: SparkConf = {
+    super.sparkConf
+      .set(GlutenConfig.COLUMNAR_FORCE_SHUFFLED_HASH_JOIN_ENABLED.key, "false")
+  }
+}

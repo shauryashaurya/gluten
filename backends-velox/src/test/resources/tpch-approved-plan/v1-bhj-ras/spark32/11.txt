@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (60)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (40)
+   VeloxColumnarToRow (40)
    +- ^ SortExecTransformer (38)
       +- ^ InputIteratorTransformer (37)
          +- ShuffleQueryStage (35)
@@ -19,19 +19,19 @@ AdaptiveSparkPlan (60)
                                              +- ^ BroadcastHashJoinExecTransformer Inner BuildRight (20)
                                                 :- ^ ProjectExecTransformer (11)
                                                 :  +- ^ BroadcastHashJoinExecTransformer Inner BuildRight (10)
-                                                :     :- ^ NoopFilter (2)
-                                                :     :  +- ^ Scan parquet (1)
+                                                :     :- ^ FilterExecTransformer (2)
+                                                :     :  +- ^ ScanTransformer parquet  (1)
                                                 :     +- ^ InputIteratorTransformer (9)
                                                 :        +- BroadcastQueryStage (7)
                                                 :           +- ColumnarBroadcastExchange (6)
-                                                :              +- ^ NoopFilter (4)
-                                                :                 +- ^ Scan parquet (3)
+                                                :              +- ^ FilterExecTransformer (4)
+                                                :                 +- ^ ScanTransformer parquet  (3)
                                                 +- ^ InputIteratorTransformer (19)
                                                    +- BroadcastQueryStage (17)
                                                       +- ColumnarBroadcastExchange (16)
                                                          +- ^ ProjectExecTransformer (14)
-                                                            +- ^ NoopFilter (13)
-                                                               +- ^ Scan parquet (12)
+                                                            +- ^ FilterExecTransformer (13)
+                                                               +- ^ ScanTransformer parquet  (12)
 +- == Initial Plan ==
    Sort (59)
    +- Exchange (58)
@@ -54,27 +54,27 @@ AdaptiveSparkPlan (60)
                                  +- Scan parquet (48)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [4]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(ps_suppkey)]
 ReadSchema: struct<ps_partkey:bigint,ps_suppkey:bigint,ps_availqty:int,ps_supplycost:decimal(12,2)>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [4]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
-Arguments: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
+Arguments: isnotnull(ps_suppkey#X)
 
-(3) Scan parquet
+(3) ScanTransformer parquet 
 Output [2]: [s_suppkey#X, s_nationkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
 ReadSchema: struct<s_suppkey:bigint,s_nationkey:bigint>
 
-(4) NoopFilter
+(4) FilterExecTransformer
 Input [2]: [s_suppkey#X, s_nationkey#X]
-Arguments: [s_suppkey#X, s_nationkey#X]
+Arguments: (isnotnull(s_suppkey#X) AND isnotnull(s_nationkey#X))
 
 (5) WholeStageCodegenTransformer (X)
 Input [2]: [s_suppkey#X, s_nationkey#X]
@@ -103,16 +103,16 @@ Join condition: None
 Output [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, s_nationkey#X]
 Input [6]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X, s_suppkey#X, s_nationkey#X]
 
-(12) Scan parquet
+(12) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(n_name), EqualTo(n_name,GERMANY), IsNotNull(n_nationkey)]
 ReadSchema: struct<n_nationkey:bigint,n_name:string>
 
-(13) NoopFilter
+(13) FilterExecTransformer
 Input [2]: [n_nationkey#X, n_name#X]
-Arguments: [n_nationkey#X, n_name#X]
+Arguments: ((isnotnull(n_name#X) AND (n_name#X = GERMANY)) AND isnotnull(n_nationkey#X))
 
 (14) ProjectExecTransformer
 Output [1]: [n_nationkey#X]
@@ -142,11 +142,11 @@ Right keys [1]: [n_nationkey#X]
 Join condition: None
 
 (21) ProjectExecTransformer
-Output [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, CheckOverflow((promote_precision(ps_supplycost#X) * promote_precision(cast(cast(ps_availqty#X as decimal(10,0)) as decimal(12,2)))), DecimalType(23,2), true) AS _pre_X#X]
+Output [2]: [ps_partkey#X, CheckOverflow((promote_precision(ps_supplycost#X) * promote_precision(cast(cast(ps_availqty#X as decimal(10,0)) as decimal(12,2)))), DecimalType(23,2), true) AS _pre_X#X]
 Input [5]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, s_nationkey#X, n_nationkey#X]
 
 (22) FlushableHashAggregateExecTransformer
-Input [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, _pre_X#X]
+Input [2]: [ps_partkey#X, _pre_X#X]
 Keys [1]: [ps_partkey#X]
 Functions [1]: [partial_sum(_pre_X#X)]
 Aggregate Attributes [2]: [sum#X, isEmpty#X]
@@ -219,7 +219,7 @@ Arguments: [value#X DESC NULLS LAST], true, 0
 Input [2]: [ps_partkey#X, value#X]
 Arguments: false
 
-(40) VeloxColumnarToRowExec
+(40) VeloxColumnarToRow
 Input [2]: [ps_partkey#X, value#X]
 
 (41) Scan parquet

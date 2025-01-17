@@ -16,7 +16,7 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.extension.columnar.validator.FallbackInjects
 
 import org.apache.spark.SparkConf
@@ -30,7 +30,7 @@ import java.sql.Timestamp
 abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSuite {
 
   protected val rootPath: String = getClass.getResource("/").getPath
-  override protected val resourcePath: String = "/tpch-data-parquet-velox"
+  override protected val resourcePath: String = "/tpch-data-parquet"
   override protected val fileFormat: String = "parquet"
 
   import testImplicits._
@@ -49,6 +49,7 @@ abstract class VeloxAggregateFunctionsSuite extends VeloxWholeStageTransformerSu
       .set("spark.unsafe.exceptionOnMemoryLeak", "true")
       .set("spark.sql.autoBroadcastJoinThreshold", "-1")
       .set("spark.sql.sources.useV1SourceList", "avro")
+      .set("spark.gluten.sql.mergeTwoPhasesAggregate.enabled", "false")
   }
 
   test("count") {

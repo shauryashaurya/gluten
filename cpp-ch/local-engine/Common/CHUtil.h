@@ -16,20 +16,18 @@
  * limitations under the License.
  */
 #pragma once
-
-#include <filesystem>
+#include <unordered_set>
 #include <Core/Block.h>
-#include <Core/ColumnWithTypeAndName.h>
-#include <Core/NamesAndTypes.h>
-#include <Core/Settings.h>
+#include <Core/Joins.h>
 #include <Functions/CastOverloadResolver.h>
 #include <Interpreters/ActionsDAG.h>
 #include <Interpreters/Context.h>
 #include <Processors/Chunk.h>
+#include <Processors/QueryPlan/IQueryPlanStep.h>
 #include <base/types.h>
-#include <google/protobuf/wrappers.pb.h>
 #include <substrait/algebra.pb.h>
 #include <Common/CurrentThread.h>
+#include <Common/GlutenConfig.h>
 
 namespace DB
 {
@@ -42,8 +40,7 @@ namespace local_engine
 static const String MERGETREE_INSERT_WITHOUT_LOCAL_STORAGE = "mergetree.insert_without_local_storage";
 static const String MERGETREE_MERGE_AFTER_INSERT = "mergetree.merge_after_insert";
 static const std::string DECIMAL_OPERATIONS_ALLOW_PREC_LOSS = "spark.sql.decimalOperations.allowPrecisionLoss";
-static const std::string SPARK_TASK_WRITE_TMEP_DIR = "gluten.write.temp.dir";
-static const std::string SPARK_TASK_WRITE_FILENAME = "gluten.write.file.name";
+static const std::string TIMER_PARSER_POLICY = "spark.sql.legacy.timeParserPolicy";
 
 static const std::unordered_set<String> BOOL_VALUE_SETTINGS{
     MERGETREE_MERGE_AFTER_INSERT, MERGETREE_INSERT_WITHOUT_LOCAL_STORAGE, DECIMAL_OPERATIONS_ALLOW_PREC_LOSS};
@@ -84,7 +81,8 @@ public:
 
     /// The column names may be different in two blocks.
     /// and the nullability also could be different, with TPCDS-Q1 as an example.
-    static DB::ColumnWithTypeAndName convertColumnAsNecessary(const DB::ColumnWithTypeAndName & column, const DB::ColumnWithTypeAndName & sample_column);
+    static DB::ColumnWithTypeAndName
+    convertColumnAsNecessary(const DB::ColumnWithTypeAndName & column, const DB::ColumnWithTypeAndName & sample_column);
 };
 
 class PODArrayUtil
@@ -115,12 +113,6 @@ private:
     std::map<String, DB::BlockPtr> nested_tables;
 
     const DB::ColumnWithTypeAndName * findColumn(const DB::Block & block, const std::string & name) const;
-};
-
-namespace PlanUtil
-{
-std::string explainPlan(DB::QueryPlan & plan);
-void checkOuputType(const DB::QueryPlan & plan);
 };
 
 class ActionsDAGUtil
@@ -155,19 +147,14 @@ class JNIUtils;
 class BackendInitializerUtil
 {
 public:
-    static DB::Field toField(const String key, const String value);
+    static DB::Field toField(const String & key, const String & value);
 
     /// Initialize two kinds of resources
     /// 1. global level resources like global_context/shared_context, notice that they can only be initialized once in process lifetime
     /// 2. session level resources like settings/configs, they can be initialized multiple times following the lifetime of executor/driver
-    static void init(const std::string_view plan);
-    static void updateConfig(const DB::ContextMutablePtr &, std::string_view);
+    static void initBackend(const SparkConfigs::ConfigMap & spark_conf_map);
+    static void initSettings(const SparkConfigs::ConfigMap & spark_conf_map, DB::Settings & settings);
 
-    // use excel text parser
-    inline static const std::string USE_EXCEL_PARSER = "use_excel_serialization";
-    inline static const std::string EXCEL_EMPTY_AS_NULL = "use_excel_serialization.empty_as_null";
-    inline static const std::string EXCEL_NUMBER_FORCE = "use_excel_serialization.number_force";
-    inline static const std::string EXCEL_QUOTE_STRICT = "use_excel_serialization.quote_strict";
     inline static const String CH_BACKEND_PREFIX = "spark.gluten.sql.columnar.backend.ch";
 
     inline static const String CH_RUNTIME_CONFIG = "runtime_config";
@@ -206,20 +193,18 @@ private:
     friend class BackendFinalizerUtil;
     friend class JNIUtils;
 
-    static DB::Context::ConfigurationPtr initConfig(std::map<std::string, std::string> & backend_conf_map);
+    static DB::Context::ConfigurationPtr initConfig(const SparkConfigs::ConfigMap & spark_conf_map);
+    static String tryGetConfigFile(const SparkConfigs::ConfigMap & spark_conf_map);
     static void initLoggers(DB::Context::ConfigurationPtr config);
     static void initEnvs(DB::Context::ConfigurationPtr config);
-    static void initSettings(std::map<std::string, std::string> & backend_conf_map, DB::Settings & settings);
 
     static void initContexts(DB::Context::ConfigurationPtr config);
     static void initCompiledExpressionCache(DB::Context::ConfigurationPtr config);
     static void registerAllFactories();
-    static void applyGlobalConfigAndSettings(DB::Context::ConfigurationPtr, DB::Settings &);
-    static void updateNewSettings(const DB::ContextMutablePtr &, const DB::Settings &);
-    static std::vector<String> wrapDiskPathConfig(const String & path_prefix, const String & path_suffix, Poco::Util::AbstractConfiguration & config);
+    static void applyGlobalConfigAndSettings(const DB::Context::ConfigurationPtr & config, const DB::Settings & settings);
+    static std::vector<String>
+    wrapDiskPathConfig(const String & path_prefix, const String & path_suffix, Poco::Util::AbstractConfiguration & config);
 
-
-    static std::map<std::string, std::string> getBackendConfMap(std::string_view plan);
 
     inline static std::once_flag init_flag;
     inline static Poco::Logger * logger;
@@ -262,64 +247,12 @@ public:
     static UInt64 getMemoryRSS();
 };
 
-template <typename T>
-class ConcurrentDeque
-{
-public:
-    std::optional<T> pop_front()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-
-        if (deq.empty())
-            return {};
-
-        T t = deq.front();
-        deq.pop_front();
-        return t;
-    }
-
-    void emplace_back(T value)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        deq.emplace_back(value);
-    }
-
-    void emplace_back(std::vector<T> values)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        deq.insert(deq.end(), values.begin(), values.end());
-    }
-
-    void emplace_front(T value)
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        deq.emplace_front(value);
-    }
-
-    size_t size()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return deq.size();
-    }
-
-    bool empty()
-    {
-        std::lock_guard<std::mutex> lock(mtx);
-        return deq.empty();
-    }
-
-    std::deque<T> unsafeGet() { return deq; }
-
-private:
-    std::deque<T> deq;
-    mutable std::mutex mtx;
-};
-
 class JoinUtil
 {
 public:
     static void reorderJoinOutput(DB::QueryPlan & plan, DB::Names cols);
-    static std::pair<DB::JoinKind, DB::JoinStrictness> getJoinKindAndStrictness(substrait::JoinRel_JoinType join_type, bool is_existence_join);
+    static std::pair<DB::JoinKind, DB::JoinStrictness>
+    getJoinKindAndStrictness(substrait::JoinRel_JoinType join_type, bool is_existence_join);
     static std::pair<DB::JoinKind, DB::JoinStrictness> getCrossJoinKindAndStrictness(substrait::CrossRel_JoinType join_type);
 };
 

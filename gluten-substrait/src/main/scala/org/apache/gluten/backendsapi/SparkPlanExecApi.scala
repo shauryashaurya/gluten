@@ -19,7 +19,6 @@ package org.apache.gluten.backendsapi
 import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.execution._
 import org.apache.gluten.expression._
-import org.apache.gluten.extension.columnar.transition.{Convention, ConventionFunc}
 import org.apache.gluten.sql.shims.SparkShimLoader
 import org.apache.gluten.substrait.expression.{ExpressionBuilder, ExpressionNode, WindowFunctionNode}
 
@@ -36,12 +35,13 @@ import org.apache.spark.sql.catalyst.plans.JoinType
 import org.apache.spark.sql.catalyst.plans.physical.{BroadcastMode, Partitioning}
 import org.apache.spark.sql.execution._
 import org.apache.spark.sql.execution.datasources.FileFormat
-import org.apache.spark.sql.execution.datasources.v2.{BatchScanExec, FileScan}
+import org.apache.spark.sql.execution.datasources.v2.FileScan
 import org.apache.spark.sql.execution.exchange.ShuffleExchangeExec
 import org.apache.spark.sql.execution.joins.BuildSideRelation
 import org.apache.spark.sql.execution.metric.SQLMetric
 import org.apache.spark.sql.execution.python.ArrowEvalPythonExec
-import org.apache.spark.sql.hive.{HiveTableScanExecTransformer, HiveUDFTransformer}
+import org.apache.spark.sql.execution.window._
+import org.apache.spark.sql.hive.HiveUDFTransformer
 import org.apache.spark.sql.types.{DecimalType, LongType, NullType, StructType}
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
@@ -51,16 +51,6 @@ import java.util.{ArrayList => JArrayList, List => JList, Map => JMap}
 import scala.collection.JavaConverters._
 
 trait SparkPlanExecApi {
-
-  /** The columnar-batch type this backend is using. */
-  def batchType: Convention.BatchType
-
-  /**
-   * Overrides [[org.apache.gluten.extension.columnar.transition.ConventionFunc]] Gluten is using to
-   * determine the convention (its row-based processing / columnar-batch processing support) of a
-   * plan with a user-defined function that accepts a plan then returns batch type it outputs.
-   */
-  def batchTypeFunc(): ConventionFunc.BatchOverride = PartialFunction.empty
 
   /**
    * Generate FilterExecTransformer.
@@ -73,9 +63,6 @@ trait SparkPlanExecApi {
    *   the transformer of FilterExec
    */
   def genFilterExecTransformer(condition: Expression, child: SparkPlan): FilterExecTransformerBase
-
-  def genHiveTableScanExecTransformer(plan: SparkPlan): HiveTableScanExecTransformer =
-    HiveTableScanExecTransformer(plan)
 
   def genProjectExecTransformer(
       projectList: Seq[NamedExpression],
@@ -186,6 +173,13 @@ trait SparkPlanExecApi {
       right: ExpressionTransformer,
       original: NaNvl): ExpressionTransformer = {
     GenericExpressionTransformer(substraitExprName, Seq(left, right), original)
+  }
+
+  def genAtLeastNNonNullsTransformer(
+      substraitExprName: String,
+      children: Seq[ExpressionTransformer],
+      original: AtLeastNNonNulls): ExpressionTransformer = {
+    throw new GlutenNotSupportException("AtLeastNNonNulls is not supported")
   }
 
   def genUuidTransformer(substraitExprName: String, original: Uuid): ExpressionTransformer = {
@@ -371,7 +365,7 @@ trait SparkPlanExecApi {
 
   /** Create ColumnarWriteFilesExec */
   def createColumnarWriteFilesExec(
-      child: SparkPlan,
+      child: WriteFilesExecTransformer,
       noop: SparkPlan,
       fileFormat: FileFormat,
       partitionColumns: Seq[Attribute],
@@ -627,9 +621,9 @@ trait SparkPlanExecApi {
       })
     }
     sparkExecNode match {
-      case fileSourceScan: FileSourceScanExec =>
+      case fileSourceScan: FileSourceScanExecTransformerBase =>
         getPushedFilter(fileSourceScan.dataFilters)
-      case batchScan: BatchScanExec =>
+      case batchScan: BatchScanExecTransformerBase =>
         batchScan.scan match {
           case fileScan: FileScan =>
             getPushedFilter(fileScan.dataFilters)
@@ -678,9 +672,26 @@ trait SparkPlanExecApi {
     }
   }
 
+  def genWindowGroupLimitTransformer(
+      partitionSpec: Seq[Expression],
+      orderSpec: Seq[SortOrder],
+      rankLikeFunction: Expression,
+      limit: Int,
+      mode: WindowGroupLimitMode,
+      child: SparkPlan): SparkPlan =
+    WindowGroupLimitExecTransformer(partitionSpec, orderSpec, rankLikeFunction, limit, mode, child)
+
   def genHiveUDFTransformer(
       expr: Expression,
       attributeSeq: Seq[Attribute]): ExpressionTransformer = {
     HiveUDFTransformer.replaceWithExpressionTransformer(expr, attributeSeq)
   }
+
+  def genStringSplitTransformer(
+      substraitExprName: String,
+      srcExpr: ExpressionTransformer,
+      regexExpr: ExpressionTransformer,
+      limitExpr: ExpressionTransformer,
+      original: StringSplit): ExpressionTransformer =
+    GenericExpressionTransformer(substraitExprName, Seq(srcExpr, regexExpr, limitExpr), original)
 }

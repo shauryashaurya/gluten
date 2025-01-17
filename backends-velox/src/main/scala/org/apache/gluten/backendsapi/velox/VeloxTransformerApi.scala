@@ -16,7 +16,8 @@
  */
 package org.apache.gluten.backendsapi.velox
 
-import org.apache.gluten.backendsapi.TransformerApi
+import org.apache.gluten.backendsapi.{BackendsApiManager, TransformerApi}
+import org.apache.gluten.execution.WriteFilesExecTransformer
 import org.apache.gluten.expression.ConverterUtils
 import org.apache.gluten.runtime.Runtimes
 import org.apache.gluten.substrait.expression.{ExpressionBuilder, ExpressionNode}
@@ -27,11 +28,12 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.connector.read.InputPartition
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, PartitionDirectory}
+import org.apache.spark.sql.sources.DataSourceRegister
 import org.apache.spark.sql.types._
 import org.apache.spark.task.TaskResources
 import org.apache.spark.util.collection.BitSet
 
-import com.google.protobuf.{Any, Message}
+import com.google.protobuf.{Any, Message, StringValue}
 
 import java.util.{Map => JMap}
 
@@ -85,10 +87,31 @@ class VeloxTransformerApi extends TransformerApi with Logging {
   override def getNativePlanString(substraitPlan: Array[Byte], details: Boolean): String = {
     TaskResources.runUnsafe {
       val jniWrapper = PlanEvaluatorJniWrapper.create(
-        Runtimes.contextInstance("VeloxTransformerApi#getNativePlanString"))
+        Runtimes.contextInstance(
+          BackendsApiManager.getBackendName,
+          "VeloxTransformerApi#getNativePlanString"))
       jniWrapper.nativePlanString(substraitPlan, details)
     }
   }
 
   override def packPBMessage(message: Message): Any = Any.pack(message, "")
+
+  override def genWriteParameters(write: WriteFilesExecTransformer): Any = {
+    val fileFormatStr = write.fileFormat match {
+      case register: DataSourceRegister =>
+        register.shortName
+      case _ => "UnknownFileFormat"
+    }
+    val compressionCodec =
+      WriteFilesExecTransformer.getCompressionCodec(write.caseInsensitiveOptions).capitalize
+    val writeParametersStr = new StringBuffer("WriteParameters:")
+    writeParametersStr.append("is").append(compressionCodec).append("=1")
+    writeParametersStr.append(";format=").append(fileFormatStr).append("\n")
+
+    packPBMessage(
+      StringValue
+        .newBuilder()
+        .setValue(writeParametersStr.toString)
+        .build())
+  }
 }

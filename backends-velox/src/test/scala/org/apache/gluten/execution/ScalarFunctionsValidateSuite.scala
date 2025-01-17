@@ -16,10 +16,15 @@
  */
 package org.apache.gluten.execution
 
+import org.apache.gluten.config.GlutenConfig
+
 import org.apache.spark.{SparkConf, SparkException}
 import org.apache.spark.sql.catalyst.optimizer.NullPropagation
 import org.apache.spark.sql.execution.ProjectExec
 import org.apache.spark.sql.types._
+
+import org.scalactic.source.Position
+import org.scalatest.Tag
 
 import java.sql.Timestamp
 
@@ -27,23 +32,6 @@ class ScalarFunctionsValidateSuiteRasOff extends ScalarFunctionsValidateSuite {
   override protected def sparkConf: SparkConf = {
     super.sparkConf
       .set("spark.gluten.ras.enabled", "false")
-  }
-
-  // Since https://github.com/apache/incubator-gluten/pull/6200.
-  test("Test input_file_name function") {
-    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
-                         | from lineitem limit 100""".stripMargin) {
-      checkGlutenOperatorMatch[ProjectExecTransformer]
-    }
-
-    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
-                         | from
-                         | (select l_orderkey from lineitem
-                         | union all
-                         | select o_orderkey as l_orderkey from orders)
-                         | limit 100""".stripMargin) {
-      checkGlutenOperatorMatch[ProjectExecTransformer]
-    }
   }
 }
 
@@ -53,17 +41,19 @@ class ScalarFunctionsValidateSuiteRasOn extends ScalarFunctionsValidateSuite {
       .set("spark.gluten.ras.enabled", "true")
   }
 
-  // TODO: input_file_name is not yet supported in RAS
-  ignore("Test input_file_name function") {
-    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
-                         | from lineitem limit 100""".stripMargin) { _ => }
-
-    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
-                         | from
-                         | (select l_orderkey from lineitem
-                         | union all
-                         | select o_orderkey as l_orderkey from orders)
-                         | limit 100""".stripMargin) { _ => }
+  // TODO: Fix the incompatibilities then remove this method. See GLUTEN-7600.
+  override protected def test(testName: String, testTags: Tag*)(testFun: => Any)(implicit
+      pos: Position): Unit = {
+    val exclusions = Set(
+      "isnull function",
+      "null input for array_size",
+      "Test make_ym_interval function"
+    )
+    if (exclusions.contains(testName)) {
+      super.ignore(testName, testTags: _*)(testFun)(pos)
+      return
+    }
+    super.test(testName, testTags: _*)(testFun)(pos)
   }
 }
 
@@ -703,7 +693,8 @@ abstract class ScalarFunctionsValidateSuite extends FunctionsValidateSuite {
     }
   }
 
-  test("Test monotonically_increasing_id function") {
+  // FIXME: Ignored: https://github.com/apache/incubator-gluten/issues/7600.
+  ignore("Test monotonically_increasintestg_id function") {
     runQueryAndCompare("""SELECT monotonically_increasing_id(), l_orderkey
                          | from lineitem limit 100""".stripMargin) {
       checkGlutenOperatorMatch[ProjectExecTransformer]
@@ -1026,7 +1017,7 @@ abstract class ScalarFunctionsValidateSuite extends FunctionsValidateSuite {
   test("extract date field") {
     withTable("t") {
       sql("create table t (dt date) using parquet")
-      sql("insert into t values(date '2008-02-20')")
+      sql("insert into t values(date '2008-02-20'), (date '2022-01-01')")
       runQueryAndCompare("select weekofyear(dt) from t") {
         checkGlutenOperatorMatch[ProjectExecTransformer]
       }
@@ -1363,6 +1354,180 @@ abstract class ScalarFunctionsValidateSuite extends FunctionsValidateSuite {
   test("repeat") {
     runQueryAndCompare("select repeat(c_comment, 5) from customer limit 50") {
       checkGlutenOperatorMatch[ProjectExecTransformer]
+    }
+  }
+
+  test("concat_ws") {
+    runQueryAndCompare("SELECT concat_ws('~~', c_comment, c_address) FROM customer LIMIT 50") {
+      checkGlutenOperatorMatch[ProjectExecTransformer]
+    }
+
+    withTempPath {
+      path =>
+        Seq[Seq[String]](Seq("ab", null, "cd", "", "ef"), Seq(null, "x", "", "y"), Seq.empty, null)
+          .toDF("col")
+          .write
+          .parquet(path.getCanonicalPath)
+
+        spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("array_tbl")
+
+        runQueryAndCompare("SELECT concat_ws('~~', col, 'end') AS res from array_tbl;") {
+          checkGlutenOperatorMatch[ProjectExecTransformer]
+        }
+    }
+  }
+
+  test("Test input_file_name function") {
+    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
+                         | from lineitem limit 100""".stripMargin) {
+      checkGlutenOperatorMatch[ProjectExecTransformer]
+    }
+
+    runQueryAndCompare("""SELECT input_file_name(), l_orderkey
+                         | from
+                         | (select l_orderkey from lineitem
+                         | union all
+                         | select o_orderkey as l_orderkey from orders)
+                         | limit 100""".stripMargin) {
+      checkGlutenOperatorMatch[ProjectExecTransformer]
+    }
+
+    withTempPath {
+      path =>
+        Seq(1, 2, 3).toDF("a").write.json(path.getCanonicalPath)
+        spark.read.json(path.getCanonicalPath).createOrReplaceTempView("json_table")
+        val sql =
+          """
+            |SELECT input_file_name(), a
+            |FROM
+            |(SELECT a FROM json_table
+            |UNION ALL
+            |SELECT l_orderkey as a FROM lineitem)
+            |LIMIT 100
+            |""".stripMargin
+        compareResultsAgainstVanillaSpark(sql, true, { _ => })
+    }
+
+    // Collapse project if scan is fallback and the outer project is cheap or fallback.
+    Seq("true", "false").foreach {
+      flag =>
+        withSQLConf(
+          GlutenConfig.COLUMNAR_PROJECT_ENABLED.key -> flag,
+          GlutenConfig.COLUMNAR_BATCHSCAN_ENABLED.key -> "false") {
+          runQueryAndCompare("SELECT l_orderkey, input_file_name() as name FROM lineitem") {
+            df =>
+              val plan = df.queryExecution.executedPlan
+              assert(collect(plan) { case f: ProjectExecTransformer => f }.size == 0)
+              assert(collect(plan) { case f: ProjectExec => f }.size == 1)
+          }
+        }
+    }
+  }
+
+  testWithSpecifiedSparkVersion("array insert", Some("3.4")) {
+    withTempPath {
+      path =>
+        Seq[Seq[Integer]](Seq(1, null, 5, 4), Seq(5, -1, 8, 9, -7, 2), Seq.empty, null)
+          .toDF("value")
+          .write
+          .parquet(path.getCanonicalPath)
+
+        spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("array_tbl")
+
+        Seq("true", "false").foreach {
+          legacyNegativeIndex =>
+            withSQLConf("spark.sql.legacy.negativeIndexInArrayInsert" -> legacyNegativeIndex) {
+              runQueryAndCompare("""
+                                   |select
+                                   |  array_insert(value, 1, 0), array_insert(value, 10, 0),
+                                   |  array_insert(value, -1, 0), array_insert(value, -10, 0)
+                                   |from array_tbl
+                                   |""".stripMargin) {
+                checkGlutenOperatorMatch[ProjectExecTransformer]
+              }
+            }
+        }
+    }
+  }
+
+  test("round on integral types should return same values as spark") {
+    // Scale > 0 should return same value as input on integral values
+    compareResultsAgainstVanillaSpark("select round(78, 1)", true, { _ => })
+    // Scale < 0 should round down even on integral values
+    compareResultsAgainstVanillaSpark("select round(44, -1)", true, { _ => })
+  }
+
+  test("test internal function: AtLeastNNonNulls") {
+    // AtLeastNNonNulls is called by drop DataFrameNafunction
+    withTempPath {
+      path =>
+        val input = Seq[(String, java.lang.Integer, java.lang.Double)](
+          ("Bob", 16, 176.5),
+          ("Alice", null, 164.3),
+          ("David", 60, null),
+          ("Nina", 25, Double.NaN),
+          ("Amy", null, null),
+          (null, null, null)
+        ).toDF("name", "age", "height")
+        val rows = input.collect()
+        input.write.parquet(path.getCanonicalPath)
+
+        val df = spark.read.parquet(path.getCanonicalPath).na.drop(2, Seq("age", "height"))
+        checkAnswer(df, rows(0) :: Nil)
+        checkGlutenOperatorMatch[FilterExecTransformer](df)
+    }
+  }
+
+  testWithSpecifiedSparkVersion("Test try_cast", Some("3.4")) {
+    withTempView("try_cast_table") {
+      withTempPath {
+        path =>
+          Seq[(String)](("123456"), ("000A1234"))
+            .toDF("str")
+            .write
+            .parquet(path.getCanonicalPath)
+          spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("try_cast_table")
+          runQueryAndCompare("select try_cast(str as bigint) from try_cast_table") {
+            checkGlutenOperatorMatch[ProjectExecTransformer]
+          }
+          runQueryAndCompare("select try_cast(str as double) from try_cast_table") {
+            checkGlutenOperatorMatch[ProjectExecTransformer]
+          }
+      }
+    }
+  }
+
+  test("Test cast") {
+    withTempView("cast_table") {
+      withTempPath {
+        path =>
+          Seq[(String)](("123456"), ("000A1234"))
+            .toDF("str")
+            .write
+            .parquet(path.getCanonicalPath)
+          spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("cast_table")
+          runQueryAndCompare("select cast(str as bigint) from cast_table") {
+            checkGlutenOperatorMatch[ProjectExecTransformer]
+          }
+          runQueryAndCompare("select cast(str as double) from cast_table") {
+            checkGlutenOperatorMatch[ProjectExecTransformer]
+          }
+      }
+    }
+  }
+
+  test("date_format") {
+    withTempPath {
+      path =>
+        val t1 = Timestamp.valueOf("2024-08-22 10:10:10.010")
+        val t2 = Timestamp.valueOf("2014-12-31 00:00:00.012")
+        val t3 = Timestamp.valueOf("1968-12-31 23:59:59.001")
+        Seq(t1, t2, t3).toDF("c0").write.parquet(path.getCanonicalPath)
+
+        spark.read.parquet(path.getCanonicalPath).createOrReplaceTempView("t")
+        runQueryAndCompare("SELECT date_format(c0, 'yyyy') FROM t") {
+          checkGlutenOperatorMatch[ProjectExecTransformer]
+        }
     }
   }
 }

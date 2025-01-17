@@ -28,17 +28,25 @@
 #include "utils/qat/QatCodec.h"
 #endif
 #ifdef GLUTEN_ENABLE_IAA
-#include "utils/qpl/qpl_codec.h"
+#include "utils/qpl/QplCodec.h"
 #endif
 #include "compute/VeloxRuntime.h"
 #include "config/VeloxConfig.h"
 #include "jni/JniFileSystem.h"
+#include "operators/functions/SparkExprToSubfieldFilterParser.h"
 #include "udf/UdfLoader.h"
-#include "utils/exception.h"
+#include "utils/Exception.h"
 #include "velox/common/caching/SsdCache.h"
 #include "velox/common/file/FileSystems.h"
 #include "velox/connectors/hive/HiveConnector.h"
 #include "velox/connectors/hive/HiveDataSource.h"
+#include "velox/connectors/hive/storage_adapters/abfs/RegisterAbfsFileSystem.h" // @manual
+#include "velox/connectors/hive/storage_adapters/gcs/RegisterGcsFileSystem.h" // @manual
+#include "velox/connectors/hive/storage_adapters/hdfs/RegisterHdfsFileSystem.h" // @manual
+#include "velox/connectors/hive/storage_adapters/s3fs/RegisterS3FileSystem.h" // @manual
+#include "velox/dwio/orc/reader/OrcReader.h"
+#include "velox/dwio/parquet/RegisterParquetReader.h"
+#include "velox/dwio/parquet/RegisterParquetWriter.h"
 #include "velox/serializers/PrestoSerializer.h"
 
 DECLARE_bool(velox_exception_user_stacktrace_enabled);
@@ -55,10 +63,25 @@ using namespace facebook;
 namespace gluten {
 
 namespace {
-gluten::Runtime* veloxRuntimeFactory(
-    std::unique_ptr<AllocationListener> listener,
+MemoryManager* veloxMemoryManagerFactory(const std::string& kind, std::unique_ptr<AllocationListener> listener) {
+  return new VeloxMemoryManager(kind, std::move(listener));
+}
+
+void veloxMemoryManagerReleaser(MemoryManager* memoryManager) {
+  delete memoryManager;
+}
+
+Runtime* veloxRuntimeFactory(
+    const std::string& kind,
+    MemoryManager* memoryManager,
     const std::unordered_map<std::string, std::string>& sessionConf) {
-  return new gluten::VeloxRuntime(std::move(listener), sessionConf);
+  auto* vmm = dynamic_cast<VeloxMemoryManager*>(memoryManager);
+  GLUTEN_CHECK(vmm != nullptr, "Not a Velox memory manager");
+  return new VeloxRuntime(kind, vmm, sessionConf);
+}
+
+void veloxRuntimeReleaser(Runtime* runtime) {
+  delete runtime;
 }
 } // namespace
 
@@ -66,8 +89,9 @@ void VeloxBackend::init(const std::unordered_map<std::string, std::string>& conf
   backendConf_ =
       std::make_shared<facebook::velox::config::ConfigBase>(std::unordered_map<std::string, std::string>(conf));
 
-  // Register Velox runtime factory
-  gluten::Runtime::registerFactory(gluten::kVeloxRuntimeKind, veloxRuntimeFactory);
+  // Register factories.
+  MemoryManager::registerFactory(kVeloxBackendKind, veloxMemoryManagerFactory, veloxMemoryManagerReleaser);
+  Runtime::registerFactory(kVeloxBackendKind, veloxRuntimeFactory, veloxRuntimeReleaser);
 
   if (backendConf_->get<bool>(kDebugModeEnabled, false)) {
     LOG(INFO) << "VeloxBackend config:" << printConfig(backendConf_->rawConfigs());
@@ -110,15 +134,40 @@ void VeloxBackend::init(const std::unordered_map<std::string, std::string>& conf
 
   // Setup and register.
   velox::filesystems::registerLocalFileSystem();
+
+#ifdef ENABLE_HDFS
+  velox::filesystems::registerHdfsFileSystem();
+#endif
+#ifdef ENABLE_S3
+  velox::filesystems::registerS3FileSystem();
+#endif
+#ifdef ENABLE_GCS
+  velox::filesystems::registerGcsFileSystem();
+#endif
+#ifdef ENABLE_ABFS
+  velox::filesystems::registerAbfsFileSystem();
+#endif
+
   initJolFilesystem();
   initCache();
   initConnector();
+
+  velox::dwio::common::registerFileSinks();
+  velox::parquet::registerParquetReaderFactory();
+  velox::parquet::registerParquetWriterFactory();
+  velox::orc::registerOrcReaderFactory();
+  velox::exec::ExprToSubfieldFilterParser::registerParserFactory(
+      []() { return std::make_shared<SparkExprToSubfieldFilterParser>(); });
 
   // Register Velox functions
   registerAllFunctions();
   if (!facebook::velox::isRegisteredVectorSerde()) {
     // serde, for spill
     facebook::velox::serializer::presto::PrestoVectorSerde::registerVectorSerde();
+  }
+  if (!isRegisteredNamedVectorSerde(facebook::velox::VectorSerde::Kind::kPresto)) {
+    // RSS shuffle serde.
+    facebook::velox::serializer::presto::PrestoVectorSerde::registerNamedVectorSerde();
   }
   velox::exec::Operator::registerOperator(std::make_unique<RowVectorStreamOperatorTranslator>());
 
@@ -149,7 +198,7 @@ void VeloxBackend::initJolFilesystem() {
   // FIXME It's known that if spill compression is disabled, the actual spill file size may
   //   in crease beyond this limit a little (maximum 64 rows which is by default
   //   one compression page)
-  gluten::registerJolFileSystem(maxSpillFileSize);
+  registerJolFileSystem(maxSpillFileSize);
 }
 
 void VeloxBackend::initCache() {
@@ -176,7 +225,7 @@ void VeloxBackend::initCache() {
     if (si.available < ssdCacheSize) {
       VELOX_FAIL(
           "not enough space for ssd cache in " + ssdCachePath + " cache size: " + std::to_string(ssdCacheSize) +
-          "free space: " + std::to_string(si.available))
+          "free space: " + std::to_string(si.available));
     }
 
     velox::memory::MmapAllocator::Options options;
@@ -191,7 +240,7 @@ void VeloxBackend::initCache() {
       asyncDataCache_ = velox::cache::AsyncDataCache::create(cacheAllocator_.get(), std::move(ssd));
     }
 
-    VELOX_CHECK_NOT_NULL(dynamic_cast<velox::cache::AsyncDataCache*>(asyncDataCache_.get()))
+    VELOX_CHECK_NOT_NULL(dynamic_cast<velox::cache::AsyncDataCache*>(asyncDataCache_.get()));
     LOG(INFO) << "STARTUP: Using AsyncDataCache memory cache size: " << memCacheSize
               << ", ssdCache prefix: " << ssdCachePath << ", ssdCache size: " << ssdCacheSize
               << ", ssdCache shards: " << ssdCacheShards << ", ssdCache IO threads: " << ssdCacheIOThreads;
@@ -207,25 +256,13 @@ void VeloxBackend::initConnector() {
     connectorConfMap[k] = v;
   }
 
-#ifdef ENABLE_ABFS
-  const auto& confValue = backendConf_->rawConfigs();
-  for (auto& [k, v] : confValue) {
-    if (k.find("fs.azure.account.key") == 0) {
-      connectorConfMap[k] = v;
-    } else if (k.find("spark.hadoop.fs.azure.account.key") == 0) {
-      constexpr int32_t accountKeyPrefixLength = 13;
-      connectorConfMap[k.substr(accountKeyPrefixLength)] = v;
-    }
-  }
-#endif
-
   connectorConfMap[velox::connector::hive::HiveConfig::kEnableFileHandleCache] =
       backendConf_->get<bool>(kVeloxFileHandleCacheEnabled, kVeloxFileHandleCacheEnabledDefault) ? "true" : "false";
 
   connectorConfMap[velox::connector::hive::HiveConfig::kMaxCoalescedBytes] =
       backendConf_->get<std::string>(kMaxCoalescedBytes, "67108864"); // 64M
-  connectorConfMap[velox::connector::hive::HiveConfig::kMaxCoalescedDistanceBytes] =
-      backendConf_->get<std::string>(kMaxCoalescedDistanceBytes, "1048576"); // 1M
+  connectorConfMap[velox::connector::hive::HiveConfig::kMaxCoalescedDistance] =
+      backendConf_->get<std::string>(kMaxCoalescedDistance, "512KB"); // 512KB
   connectorConfMap[velox::connector::hive::HiveConfig::kPrefetchRowGroups] =
       backendConf_->get<std::string>(kPrefetchRowGroups, "1");
   connectorConfMap[velox::connector::hive::HiveConfig::kLoadQuantum] =
@@ -254,7 +291,7 @@ void VeloxBackend::initConnector() {
 void VeloxBackend::initUdf() {
   auto got = backendConf_->get<std::string>(kVeloxUdfLibraryPaths, "");
   if (!got.empty()) {
-    auto udfLoader = gluten::UdfLoader::getInstance();
+    auto udfLoader = UdfLoader::getInstance();
     udfLoader->loadUdfLibraries(got);
     udfLoader->registerUdf();
   }
@@ -263,7 +300,7 @@ void VeloxBackend::initUdf() {
 std::unique_ptr<VeloxBackend> VeloxBackend::instance_ = nullptr;
 
 void VeloxBackend::create(const std::unordered_map<std::string, std::string>& conf) {
-  instance_ = std::unique_ptr<VeloxBackend>(new gluten::VeloxBackend(conf));
+  instance_ = std::unique_ptr<VeloxBackend>(new VeloxBackend(conf));
 }
 
 VeloxBackend* VeloxBackend::get() {

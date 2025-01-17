@@ -16,6 +16,8 @@
  */
 package org.apache.gluten.execution
 
+import org.apache.gluten.backendsapi.clickhouse.CHConf
+
 import org.apache.spark.SparkConf
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.optimizer._
@@ -32,7 +34,6 @@ class GlutenClickHouseColumnarShuffleAQESuite
   override protected val tablesPath: String = basePath + "/tpch-data-ch"
   override protected val tpchQueries: String = rootPath + "queries/tpch-queries-ch"
   override protected val queriesResults: String = rootPath + "mergetree-queries-output"
-  private val backendConfigPrefix = "spark.gluten.sql.columnar.backend.ch."
 
   /** Run Gluten + ClickHouse Backend with ColumnarShuffleManager */
   override protected def sparkConf: SparkConf = {
@@ -53,13 +54,11 @@ class GlutenClickHouseColumnarShuffleAQESuite
           case csr: AQEShuffleReadExec => csr
         }
         assert(colCustomShuffleReaderExecs.size == 2)
-        val coalescedPartitionSpec0 = colCustomShuffleReaderExecs(0)
-          .partitionSpecs(0)
+        val coalescedPartitionSpec0 = colCustomShuffleReaderExecs.head.partitionSpecs.head
           .asInstanceOf[CoalescedPartitionSpec]
         assert(coalescedPartitionSpec0.startReducerIndex == 0)
-        assert(coalescedPartitionSpec0.endReducerIndex == 5)
-        val coalescedPartitionSpec1 = colCustomShuffleReaderExecs(1)
-          .partitionSpecs(0)
+        assert(coalescedPartitionSpec0.endReducerIndex == 4)
+        val coalescedPartitionSpec1 = colCustomShuffleReaderExecs(1).partitionSpecs.head
           .asInstanceOf[CoalescedPartitionSpec]
         assert(coalescedPartitionSpec1.startReducerIndex == 0)
         assert(coalescedPartitionSpec1.endReducerIndex == 5)
@@ -180,7 +179,7 @@ class GlutenClickHouseColumnarShuffleAQESuite
 
   test("GLUTEN-6768 rerorder hash join") {
     withSQLConf(
-      ("spark.gluten.sql.columnar.backend.ch.enable_reorder_hash_join_tables", "true"),
+      (CHConf.prefixOf("enable_reorder_hash_join_tables"), "true"),
       ("spark.sql.adaptive.enabled", "true")) {
       spark.sql("create table t1(a int, b int) using parquet")
       spark.sql("create table t2(a int, b int) using parquet")
@@ -207,9 +206,10 @@ class GlutenClickHouseColumnarShuffleAQESuite
         }
       }
 
-      var sql = """
-                  |select * from t2 left join t1 on t1.a = t2.a
-                  |""".stripMargin
+      var sql =
+        """
+          |select * from t2 left join t1 on t1.a = t2.a
+          |""".stripMargin
       compareResultsAgainstVanillaSpark(
         sql,
         true,
@@ -265,8 +265,8 @@ class GlutenClickHouseColumnarShuffleAQESuite
 
   test("GLUTEN-6768 change mixed join condition into multi join on clauses") {
     withSQLConf(
-      (backendConfigPrefix + "runtime_config.prefer_multi_join_on_clauses", "true"),
-      (backendConfigPrefix + "runtime_config.multi_join_on_clauses_build_side_row_limit", "1000000")
+      (CHConf.runtimeConfig("prefer_multi_join_on_clauses"), "true"),
+      (CHConf.runtimeConfig("multi_join_on_clauses_build_side_row_limit"), "1000000")
     ) {
 
       spark.sql("create table t1(a int, b int, c int, d int) using parquet")
@@ -305,5 +305,28 @@ class GlutenClickHouseColumnarShuffleAQESuite
       spark.sql("drop table t1")
       spark.sql("drop table t2")
     }
+  }
+
+  test("GLUTEN-2221 empty hash aggregate exec") {
+    val sql1 =
+      """
+        | select count(1) from (
+        |   select (c/all_pv)/d as t from (
+        |     select t0.*, t1.b pv from (
+        |       select * from values (1,2,2,1), (2,3,4,1), (3,4,6,1) as data(a,b,c,d)
+        |     ) as t0 join (
+        |       select * from values(1,5),(2,5),(2,6) as data(a,b)
+        |     ) as t1
+        |     on t0.a = t1.a
+        |   ) t2 join(
+        |     select sum(t1.b) all_pv from (
+        |       select * from values (1,2,2,1), (2,3,4,1), (3,4,6,1) as data(a,b,c,d)
+        |     ) as t0 join (
+        |       select * from values(1,5),(2,5),(2,6) as data(a,b)
+        |     ) as t1
+        |     on t0.a = t1.a
+        |   ) t3
+        | )""".stripMargin
+    compareResultsAgainstVanillaSpark(sql1, true, { _ => })
   }
 }

@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (82)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (56)
+   VeloxColumnarToRow (56)
    +- ^ SortExecTransformer (54)
       +- ^ InputIteratorTransformer (53)
          +- ShuffleQueryStage (51)
@@ -29,21 +29,21 @@ AdaptiveSparkPlan (82)
                                                 :                 :        +- VeloxResizeBatches (5)
                                                 :                 :           +- ^ ProjectExecTransformer (3)
                                                 :                 :              +- ^ FilterExecTransformer (2)
-                                                :                 :                 +- ^ Scan parquet (1)
+                                                :                 :                 +- ^ ScanTransformer parquet  (1)
                                                 :                 +- ^ InputIteratorTransformer (18)
                                                 :                    +- ShuffleQueryStage (16)
                                                 :                       +- ColumnarExchange (15)
                                                 :                          +- VeloxResizeBatches (14)
                                                 :                             +- ^ ProjectExecTransformer (12)
                                                 :                                +- ^ FilterExecTransformer (11)
-                                                :                                   +- ^ Scan parquet (10)
+                                                :                                   +- ^ ScanTransformer parquet  (10)
                                                 +- ^ InputIteratorTransformer (35)
                                                    +- ShuffleQueryStage (33)
                                                       +- ColumnarExchange (32)
                                                          +- VeloxResizeBatches (31)
                                                             +- ^ ProjectExecTransformer (29)
                                                                +- ^ FilterExecTransformer (28)
-                                                                  +- ^ Scan parquet (27)
+                                                                  +- ^ ScanTransformer parquet  (27)
 +- == Initial Plan ==
    Sort (81)
    +- Exchange (80)
@@ -72,7 +72,7 @@ AdaptiveSparkPlan (82)
                                     +- Scan parquet (69)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [4]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -109,7 +109,7 @@ Input [4]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
 (9) InputIteratorTransformer
 Input [4]: [ps_partkey#X, ps_suppkey#X, ps_availqty#X, ps_supplycost#X]
 
-(10) Scan parquet
+(10) ScanTransformer parquet 
 Output [2]: [s_suppkey#X, s_nationkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -177,7 +177,7 @@ Input [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, s_nationkey#X]
 (26) InputIteratorTransformer
 Input [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, s_nationkey#X]
 
-(27) Scan parquet
+(27) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -220,11 +220,11 @@ Right keys [1]: [n_nationkey#X]
 Join condition: None
 
 (37) ProjectExecTransformer
-Output [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, CheckOverflow((promote_precision(ps_supplycost#X) * promote_precision(cast(cast(ps_availqty#X as decimal(10,0)) as decimal(12,2)))), DecimalType(23,2), true) AS _pre_X#X]
+Output [2]: [ps_partkey#X, CheckOverflow((promote_precision(ps_supplycost#X) * promote_precision(cast(cast(ps_availqty#X as decimal(10,0)) as decimal(12,2)))), DecimalType(23,2), true) AS _pre_X#X]
 Input [5]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, s_nationkey#X, n_nationkey#X]
 
 (38) FlushableHashAggregateExecTransformer
-Input [4]: [ps_partkey#X, ps_availqty#X, ps_supplycost#X, _pre_X#X]
+Input [2]: [ps_partkey#X, _pre_X#X]
 Keys [1]: [ps_partkey#X]
 Functions [1]: [partial_sum(_pre_X#X)]
 Aggregate Attributes [2]: [sum#X, isEmpty#X]
@@ -297,7 +297,7 @@ Arguments: [value#X DESC NULLS LAST], true, 0
 Input [2]: [ps_partkey#X, value#X]
 Arguments: false
 
-(56) VeloxColumnarToRowExec
+(56) VeloxColumnarToRow
 Input [2]: [ps_partkey#X, value#X]
 
 (57) Scan parquet

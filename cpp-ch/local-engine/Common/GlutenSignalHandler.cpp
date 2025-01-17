@@ -16,6 +16,7 @@
  */
 #include <cstring>
 #include <vector>
+#include <thread>
 #include <Core/Settings.h>
 #include <IO/ReadBufferFromFileDescriptor.h>
 #include <IO/ReadHelpers.h>
@@ -26,6 +27,8 @@
 #include <base/phdr_cache.h>
 #include <base/sleep.h>
 #include <Poco/Exception.h>
+#include <Poco/Runnable.h>
+#include <Poco/Thread.h>
 #include <Common/CurrentThread.h>
 #include <Common/GlutenSignalHandler.h>
 #include <Common/MemoryTracker.h>
@@ -102,7 +105,7 @@ static void writeSignalIDtoSignalPipe(int sig)
     char buf[signal_pipe_buf_size];
     WriteBufferFromFileDescriptor out(writeFD(), signal_pipe_buf_size, buf);
     writeBinary(sig, out);
-    out.next();
+    out.finalize();
     errno = saved_errno;
 }
 
@@ -156,7 +159,9 @@ static void signalHandler(int sig, siginfo_t * info, void * context) noexcept
 
 /// Avoid link time dependency on DB/Interpreters - will use this function only when linked.
 __attribute__((__weak__)) void
-collectGlutenCrashLog(Int32 signal, UInt64 thread_id, const String & query_id, const StackTrace & stack_trace);
+collectGlutenCrashLog(Int32 signal, UInt64 thread_id, const String & query_id, const StackTrace & stack_trace) {
+    
+}
 
 class SignalListener : public Poco::Runnable
 {
@@ -249,9 +254,7 @@ private:
             query = thread_ptr->getQueryForLog();
 
             if (auto logs_queue = thread_ptr->getInternalTextLogsQueue())
-            {
                 CurrentThread::attachInternalTextLogsQueue(logs_queue, LogsLevel::trace);
-            }
         }
         std::string signal_description = "Unknown signal";
 
@@ -375,8 +378,6 @@ private:
 
 namespace local_engine
 {
-SignalHandler::SignalHandler() = default;
-SignalHandler::~SignalHandler() = default;
 
 struct SignalHandler::Impl
 {
@@ -445,4 +446,7 @@ void SignalHandler::init()
         LOG_WARNING(log, "LD_PRELOAD is not set, SignalHandler is disabled");
     }
 }
+
+SignalHandler::SignalHandler() = default;
+SignalHandler::~SignalHandler() = default;
 }

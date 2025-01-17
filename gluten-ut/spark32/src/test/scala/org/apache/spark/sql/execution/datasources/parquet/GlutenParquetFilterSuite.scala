@@ -26,7 +26,6 @@ import org.apache.spark.sql.connector.catalog.CatalogV2Implicits.parseColumnPath
 import org.apache.spark.sql.execution.datasources.{DataSourceStrategy, HadoopFsRelation, LogicalRelation, PushableColumnAndNestedColumn}
 import org.apache.spark.sql.execution.datasources.v2.DataSourceV2ScanRelation
 import org.apache.spark.sql.execution.datasources.v2.parquet.ParquetScan
-import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.SQLConf.LegacyBehaviorPolicy.{CORRECTED, LEGACY}
 import org.apache.spark.sql.internal.SQLConf.ParquetOutputTimestampType.INT96
@@ -48,7 +47,7 @@ import java.time.LocalDate
 import scala.reflect.ClassTag
 import scala.reflect.runtime.universe.TypeTag
 
-abstract class GltuenParquetFilterSuite extends ParquetFilterSuite with GlutenSQLTestsBaseTrait {
+abstract class GlutenParquetFilterSuite extends ParquetFilterSuite with GlutenSQLTestsBaseTrait {
   protected def checkFilterPredicate(
       predicate: Predicate,
       filterClass: Class[_ <: FilterPredicate],
@@ -103,54 +102,6 @@ abstract class GltuenParquetFilterSuite extends ParquetFilterSuite with GlutenSQ
               }
             }
         }
-    }
-  }
-
-  testGluten("Filter applied on merged Parquet schema with new column should work") {
-    import testImplicits._
-    withAllParquetReaders {
-      withSQLConf(
-        SQLConf.PARQUET_FILTER_PUSHDOWN_ENABLED.key -> "true",
-        SQLConf.PARQUET_SCHEMA_MERGING_ENABLED.key -> "true") {
-        withTempPath {
-          dir =>
-            val path1 = s"${dir.getCanonicalPath}/table1"
-            (1 to 3)
-              .map(i => (i, i.toString, null: String))
-              .toDF("a", "b", "c")
-              .write
-              .parquet(path1)
-            val path2 = s"${dir.getCanonicalPath}/table2"
-            (1 to 3)
-              .map(i => (null: Integer, i.toString, i.toString))
-              .toDF("a", "b", "c")
-              .write
-              .parquet(path2)
-
-            // No matter "c = 1" gets pushed down or not, this query should work without exception.
-            val df = spark.read.parquet(path1, path2).filter("c = 1").selectExpr("c", "b", "a")
-            df.show()
-
-            // Annotated for the type check fails.
-            // checkAnswer(df, Row(1, "1", null))
-
-            val path3 = s"${dir.getCanonicalPath}/table3"
-            val dfStruct = sparkContext.parallelize(Seq((1, 1, null))).toDF("a", "b", "c")
-            dfStruct.select(struct("a").as("s")).write.parquet(path3)
-
-            val path4 = s"${dir.getCanonicalPath}/table4"
-            val dfStruct2 = sparkContext.parallelize(Seq((null, 1, 1))).toDF("a", "b", "c")
-            dfStruct2.select(struct("c").as("s")).write.parquet(path4)
-
-            // No matter "s.c = 1" gets pushed down or not, this query
-            // should work without exception.
-            val dfStruct3 = spark.read
-              .parquet(path3, path4)
-              .filter("s.c = 1")
-              .selectExpr("s")
-            checkAnswer(dfStruct3, Row(Row(null, 1)))
-        }
-      }
     }
   }
 
@@ -357,7 +308,7 @@ abstract class GltuenParquetFilterSuite extends ParquetFilterSuite with GlutenSQ
 }
 
 @ExtendedSQLTest
-class GlutenParquetV1FilterSuite extends GltuenParquetFilterSuite with GlutenSQLTestsBaseTrait {
+class GlutenParquetV1FilterSuite extends GlutenParquetFilterSuite with GlutenSQLTestsBaseTrait {
   // TODO: enable Parquet V2 write path after file source V2 writers are workable.
   override def sparkConf: SparkConf =
     super.sparkConf
@@ -445,7 +396,7 @@ class GlutenParquetV1FilterSuite extends GltuenParquetFilterSuite with GlutenSQL
 }
 
 @ExtendedSQLTest
-class GlutenParquetV2FilterSuite extends GltuenParquetFilterSuite with GlutenSQLTestsBaseTrait {
+class GlutenParquetV2FilterSuite extends GlutenParquetFilterSuite with GlutenSQLTestsBaseTrait {
   // TODO: enable Parquet V2 write path after file source V2 writers are workable.
   override def sparkConf: SparkConf =
     super.sparkConf

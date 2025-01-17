@@ -16,7 +16,7 @@
  */
 package org.apache.spark.sql.extension
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.SparkConf
 import org.apache.spark.sql.GlutenSQLTestsTrait
@@ -45,7 +45,7 @@ class GlutenCustomerExtensionSuite extends GlutenSQLTestsTrait {
         case f: TestFileSourceScanExecTransformer => f
       }
       assert(!testFileSourceScanExecTransformer.isEmpty)
-      assert(testFileSourceScanExecTransformer(0).nodeNamePrefix.equals("TestNativeFile"))
+      assert(testFileSourceScanExecTransformer(0).nodeNamePrefix.equals("TestFile"))
     }
   }
 }

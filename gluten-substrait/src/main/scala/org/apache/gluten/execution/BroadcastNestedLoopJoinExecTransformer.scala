@@ -16,8 +16,8 @@
  */
 package org.apache.gluten.execution
 
-import org.apache.gluten.GlutenConfig
 import org.apache.gluten.backendsapi.BackendsApiManager
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.metrics.MetricsUpdater
 import org.apache.gluten.substrait.{JoinParams, SubstraitContext}
@@ -27,7 +27,7 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.optimizer.{BuildLeft, BuildRight, BuildSide}
 import org.apache.spark.sql.catalyst.plans.{FullOuter, InnerLike, JoinType, LeftExistence, LeftOuter, RightOuter}
 import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.{ExplainUtils, SparkPlan}
 import org.apache.spark.sql.execution.joins.BaseJoinExec
 import org.apache.spark.sql.execution.metric.SQLMetric
 
@@ -44,6 +44,11 @@ abstract class BroadcastNestedLoopJoinExecTransformer(
   with TransformSupport {
 
   def joinBuildSide: BuildSide = buildSide
+
+  override def simpleStringWithNodeId(): String = {
+    val opId = ExplainUtils.getOpId(this)
+    s"$nodeName $joinType $joinBuildSide ($opId)".trim
+  }
 
   override def leftKeys: Seq[Expression] = Nil
   override def rightKeys: Seq[Expression] = Nil
@@ -180,7 +185,7 @@ abstract class BroadcastNestedLoopJoinExecTransformer(
   }
 
   override protected def doValidateInternal(): ValidationResult = {
-    if (!GlutenConfig.getConf.broadcastNestedLoopJoinTransformerTransformerEnabled) {
+    if (!GlutenConfig.get.broadcastNestedLoopJoinTransformerTransformerEnabled) {
       return ValidationResult.failed(
         s"Config ${GlutenConfig.BROADCAST_NESTED_LOOP_JOIN_TRANSFORMER_ENABLED.key} not enabled")
     }

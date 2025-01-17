@@ -18,14 +18,16 @@ package org.apache.gluten.utils
 
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.expression.{ConverterUtils, ExpressionConverter}
-import org.apache.gluten.substrait.`type`.TypeBuilder
+import org.apache.gluten.substrait.`type`.{ColumnTypeNode, TypeBuilder, TypeNode}
 import org.apache.gluten.substrait.SubstraitContext
 import org.apache.gluten.substrait.expression.ExpressionNode
 
 import org.apache.spark.sql.catalyst.expressions.{Attribute, Expression}
 import org.apache.spark.sql.catalyst.plans.{FullOuter, InnerLike, JoinType, LeftAnti, LeftOuter, LeftSemi, RightOuter}
 
-import io.substrait.proto.{CrossRel, JoinRel}
+import io.substrait.proto.{CrossRel, JoinRel, NamedStruct, Type}
+
+import java.util.{Collections, List => JList}
 
 import scala.collection.JavaConverters._
 
@@ -43,7 +45,7 @@ object SubstraitUtil {
     case LeftSemi =>
       JoinRel.JoinType.JOIN_TYPE_LEFT_SEMI
     case LeftAnti =>
-      JoinRel.JoinType.JOIN_TYPE_ANTI
+      JoinRel.JoinType.JOIN_TYPE_LEFT_ANTI
     case _ =>
       // TODO: Support existence join
       JoinRel.JoinType.UNRECOGNIZED
@@ -69,9 +71,9 @@ object SubstraitUtil {
     val inputTypeNodes = output.map {
       attr => ConverterUtils.getTypeNode(attr.dataType, attr.nullable)
     }
-    // Normally the enhancement node is only used for plan validation. But here the enhancement
-    // is also used in execution phase. In this case an empty typeUrlPrefix need to be passed,
-    // so that it can be correctly parsed into json string on the cpp side.
+    // Normally, the enhancement node is only used for plan validation. But here the enhancement
+    // is also used in the execution phase. In this case, an empty typeUrlPrefix needs to be passed,
+    // so that it can be correctly parsed into JSON string on the cpp side.
     BackendsApiManager.getTransformerApiInstance.packPBMessage(
       TypeBuilder.makeStruct(false, inputTypeNodes.asJava).toProtobuf)
   }
@@ -83,5 +85,26 @@ object SubstraitUtil {
     ExpressionConverter
       .replaceWithExpressionTransformer(expr, attributeSeq)
       .doTransform(context.registeredFunction)
+  }
+
+  def createNameStructBuilder(
+      types: JList[TypeNode],
+      names: JList[String],
+      columnTypeNodes: JList[ColumnTypeNode]): NamedStruct.Builder = {
+    val structBuilder = Type.Struct.newBuilder
+    types.asScala.foreach(t => structBuilder.addTypes(t.toProtobuf))
+
+    val namedStructBuilder = NamedStruct.newBuilder
+    namedStructBuilder.setStruct(structBuilder.build())
+    names.asScala.foreach(n => namedStructBuilder.addNames(n))
+    columnTypeNodes.asScala.foreach(c => namedStructBuilder.addColumnTypes(c.toProtobuf))
+    namedStructBuilder
+  }
+
+  /** create table named struct */
+  def toNameStruct(output: JList[Attribute]): NamedStruct = {
+    val typeList = ConverterUtils.collectAttributeTypeNodes(output)
+    val nameList = ConverterUtils.collectAttributeNamesWithExprId(output)
+    createNameStructBuilder(typeList, nameList, Collections.emptyList()).build()
   }
 }

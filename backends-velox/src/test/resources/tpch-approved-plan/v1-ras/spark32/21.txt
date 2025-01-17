@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (138)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (92)
+   VeloxColumnarToRow (92)
    +- TakeOrderedAndProjectExecTransformer (91)
       +- ^ RegularHashAggregateExecTransformer (89)
          +- ^ InputIteratorTransformer (88)
@@ -29,8 +29,8 @@ AdaptiveSparkPlan (138)
                                  :                 :                 :     +- ColumnarExchange (6)
                                  :                 :                 :        +- VeloxResizeBatches (5)
                                  :                 :                 :           +- ^ ProjectExecTransformer (3)
-                                 :                 :                 :              +- ^ NoopFilter (2)
-                                 :                 :                 :                 +- ^ Scan parquet (1)
+                                 :                 :                 :              +- ^ FilterExecTransformer (2)
+                                 :                 :                 :                 +- ^ ScanTransformer parquet  (1)
                                  :                 :                 +- ^ InputIteratorTransformer (44)
                                  :                 :                    +- ShuffleQueryStage (42)
                                  :                 :                       +- ColumnarExchange (41)
@@ -43,35 +43,35 @@ AdaptiveSparkPlan (138)
                                  :                 :                                   :  :     +- ColumnarExchange (15)
                                  :                 :                                   :  :        +- VeloxResizeBatches (14)
                                  :                 :                                   :  :           +- ^ ProjectExecTransformer (12)
-                                 :                 :                                   :  :              +- ^ NoopFilter (11)
-                                 :                 :                                   :  :                 +- ^ Scan parquet (10)
+                                 :                 :                                   :  :              +- ^ FilterExecTransformer (11)
+                                 :                 :                                   :  :                 +- ^ ScanTransformer parquet  (10)
                                  :                 :                                   :  +- ^ InputIteratorTransformer (26)
                                  :                 :                                   :     +- ShuffleQueryStage (24)
                                  :                 :                                   :        +- ColumnarExchange (23)
                                  :                 :                                   :           +- VeloxResizeBatches (22)
                                  :                 :                                   :              +- ^ ProjectExecTransformer (20)
-                                 :                 :                                   :                 +- ^ Scan parquet (19)
+                                 :                 :                                   :                 +- ^ ScanTransformer parquet  (19)
                                  :                 :                                   +- ^ InputIteratorTransformer (36)
                                  :                 :                                      +- ShuffleQueryStage (34)
                                  :                 :                                         +- ColumnarExchange (33)
                                  :                 :                                            +- VeloxResizeBatches (32)
                                  :                 :                                               +- ^ ProjectExecTransformer (30)
-                                 :                 :                                                  +- ^ NoopFilter (29)
-                                 :                 :                                                     +- ^ Scan parquet (28)
+                                 :                 :                                                  +- ^ FilterExecTransformer (29)
+                                 :                 :                                                     +- ^ ScanTransformer parquet  (28)
                                  :                 +- ^ InputIteratorTransformer (61)
                                  :                    +- ShuffleQueryStage (59)
                                  :                       +- ColumnarExchange (58)
                                  :                          +- VeloxResizeBatches (57)
                                  :                             +- ^ ProjectExecTransformer (55)
-                                 :                                +- ^ NoopFilter (54)
-                                 :                                   +- ^ Scan parquet (53)
+                                 :                                +- ^ FilterExecTransformer (54)
+                                 :                                   +- ^ ScanTransformer parquet  (53)
                                  +- ^ InputIteratorTransformer (78)
                                     +- ShuffleQueryStage (76)
                                        +- ColumnarExchange (75)
                                           +- VeloxResizeBatches (74)
                                              +- ^ ProjectExecTransformer (72)
-                                                +- ^ NoopFilter (71)
-                                                   +- ^ Scan parquet (70)
+                                                +- ^ FilterExecTransformer (71)
+                                                   +- ^ ScanTransformer parquet  (70)
 +- == Initial Plan ==
    TakeOrderedAndProject (137)
    +- HashAggregate (136)
@@ -120,16 +120,16 @@ AdaptiveSparkPlan (138)
                               +- Scan parquet (127)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [3]: [s_suppkey#X, s_name#X, s_nationkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
 ReadSchema: struct<s_suppkey:bigint,s_name:string,s_nationkey:bigint>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [3]: [s_suppkey#X, s_name#X, s_nationkey#X]
-Arguments: [s_suppkey#X, s_name#X, s_nationkey#X]
+Arguments: (isnotnull(s_suppkey#X) AND isnotnull(s_nationkey#X))
 
 (3) ProjectExecTransformer
 Output [4]: [hash(s_suppkey#X, 42) AS hash_partition_key#X, s_suppkey#X, s_name#X, s_nationkey#X]
@@ -157,16 +157,16 @@ Input [3]: [s_suppkey#X, s_name#X, s_nationkey#X]
 (9) InputIteratorTransformer
 Input [3]: [s_suppkey#X, s_name#X, s_nationkey#X]
 
-(10) Scan parquet
+(10) ScanTransformer parquet 
 Output [4]: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_receiptdate), IsNotNull(l_commitdate), IsNotNull(l_suppkey), IsNotNull(l_orderkey)]
 ReadSchema: struct<l_orderkey:bigint,l_suppkey:bigint,l_commitdate:date,l_receiptdate:date>
 
-(11) NoopFilter
+(11) FilterExecTransformer
 Input [4]: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
-Arguments: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
+Arguments: ((((isnotnull(l_receiptdate#X) AND isnotnull(l_commitdate#X)) AND (l_receiptdate#X > l_commitdate#X)) AND isnotnull(l_suppkey#X)) AND isnotnull(l_orderkey#X))
 
 (12) ProjectExecTransformer
 Output [3]: [hash(l_orderkey#X, 42) AS hash_partition_key#X, l_orderkey#X, l_suppkey#X]
@@ -194,7 +194,7 @@ Input [2]: [l_orderkey#X, l_suppkey#X]
 (18) InputIteratorTransformer
 Input [2]: [l_orderkey#X, l_suppkey#X]
 
-(19) Scan parquet
+(19) ScanTransformer parquet 
 Output [2]: [l_orderkey#X, l_suppkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -231,16 +231,16 @@ Left keys [1]: [l_orderkey#X]
 Right keys [1]: [l_orderkey#X]
 Join condition: NOT (l_suppkey#X = l_suppkey#X)
 
-(28) Scan parquet
+(28) ScanTransformer parquet 
 Output [4]: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_receiptdate), IsNotNull(l_commitdate)]
 ReadSchema: struct<l_orderkey:bigint,l_suppkey:bigint,l_commitdate:date,l_receiptdate:date>
 
-(29) NoopFilter
+(29) FilterExecTransformer
 Input [4]: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
-Arguments: [l_orderkey#X, l_suppkey#X, l_commitdate#X, l_receiptdate#X]
+Arguments: ((isnotnull(l_receiptdate#X) AND isnotnull(l_commitdate#X)) AND (l_receiptdate#X > l_commitdate#X))
 
 (30) ProjectExecTransformer
 Output [3]: [hash(l_orderkey#X, 42) AS hash_partition_key#X, l_orderkey#X, l_suppkey#X]
@@ -330,16 +330,16 @@ Input [3]: [s_name#X, s_nationkey#X, l_orderkey#X]
 (52) InputIteratorTransformer
 Input [3]: [s_name#X, s_nationkey#X, l_orderkey#X]
 
-(53) Scan parquet
+(53) ScanTransformer parquet 
 Output [2]: [o_orderkey#X, o_orderstatus#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(o_orderstatus), EqualTo(o_orderstatus,F), IsNotNull(o_orderkey)]
 ReadSchema: struct<o_orderkey:bigint,o_orderstatus:string>
 
-(54) NoopFilter
+(54) FilterExecTransformer
 Input [2]: [o_orderkey#X, o_orderstatus#X]
-Arguments: [o_orderkey#X, o_orderstatus#X]
+Arguments: ((isnotnull(o_orderstatus#X) AND (o_orderstatus#X = F)) AND isnotnull(o_orderkey#X))
 
 (55) ProjectExecTransformer
 Output [2]: [hash(o_orderkey#X, 42) AS hash_partition_key#X, o_orderkey#X]
@@ -398,16 +398,16 @@ Input [2]: [s_name#X, s_nationkey#X]
 (69) InputIteratorTransformer
 Input [2]: [s_name#X, s_nationkey#X]
 
-(70) Scan parquet
+(70) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(n_name), EqualTo(n_name,SAUDI ARABIA), IsNotNull(n_nationkey)]
 ReadSchema: struct<n_nationkey:bigint,n_name:string>
 
-(71) NoopFilter
+(71) FilterExecTransformer
 Input [2]: [n_nationkey#X, n_name#X]
-Arguments: [n_nationkey#X, n_name#X]
+Arguments: ((isnotnull(n_name#X) AND (n_name#X = SAUDI ARABIA)) AND isnotnull(n_nationkey#X))
 
 (72) ProjectExecTransformer
 Output [2]: [hash(n_nationkey#X, 42) AS hash_partition_key#X, n_nationkey#X]
@@ -492,7 +492,7 @@ Arguments: false
 Input [2]: [s_name#X, numwait#X]
 Arguments: X, [numwait#X DESC NULLS LAST, s_name#X ASC NULLS FIRST], [s_name#X, numwait#X], 0
 
-(92) VeloxColumnarToRowExec
+(92) VeloxColumnarToRow
 Input [2]: [s_name#X, numwait#X]
 
 (93) Scan parquet

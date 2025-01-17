@@ -18,11 +18,13 @@
 
 #include <string>
 #include <google/protobuf/util/json_util.h>
+#include <google/protobuf/wrappers.pb.h>
 #include <Common/Exception.h>
 
 namespace DB::ErrorCodes
 {
 extern const int CANNOT_PARSE_PROTOBUF_SCHEMA;
+extern const int LOGICAL_ERROR;
 }
 
 namespace local_engine
@@ -66,4 +68,10 @@ Message BinaryToMessage(const std::string_view binary)
     return message;
 }
 
+inline std::string toString(const google::protobuf::Any & any)
+{
+    google::protobuf::StringValue sv;
+    sv.ParseFromString(any.value());
+    return sv.value();
+}
 } // namespace local_engine

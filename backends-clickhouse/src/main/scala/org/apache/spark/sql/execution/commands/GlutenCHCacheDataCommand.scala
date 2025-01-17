@@ -17,7 +17,6 @@
 package org.apache.spark.sql.execution.commands
 
 import org.apache.gluten.expression.ConverterUtils
-import org.apache.gluten.substrait.rel.ExtensionTableBuilder
 
 import org.apache.spark.affinity.CHAffinity
 import org.apache.spark.rpc.GlutenDriverEndpoint
@@ -28,6 +27,8 @@ import org.apache.spark.sql.catalyst.expressions.{Attribute, AttributeReference,
 import org.apache.spark.sql.delta._
 import org.apache.spark.sql.execution.command.LeafRunnableCommand
 import org.apache.spark.sql.execution.commands.GlutenCacheBase._
+import org.apache.spark.sql.execution.datasources.clickhouse.ExtensionTableBuilder
+import org.apache.spark.sql.execution.datasources.mergetree.{PartSerializer, StorageMeta}
 import org.apache.spark.sql.execution.datasources.v2.clickhouse.metadata.AddMergeTreeParts
 import org.apache.spark.sql.types.{BooleanType, StringType}
 
@@ -43,7 +44,7 @@ import scala.concurrent.Future
 case class GlutenCHCacheDataCommand(
     onlyMetaCache: Boolean,
     asynExecute: Boolean,
-    selectedColuman: Option[Seq[String]],
+    selectedColumn: Option[Seq[String]],
     path: Option[String],
     table: Option[TableIdentifier],
     tsfilter: Option[String],
@@ -93,8 +94,8 @@ case class GlutenCHCacheDataCommand(
         "a Delta table? Refusing to garbage collect.")
 
     val allColumns = snapshot.dataSchema.fieldNames.toSeq
-    val selectedColumns = if (selectedColuman.nonEmpty) {
-      selectedColuman.get
+    val selectedColumns = if (selectedColumn.nonEmpty) {
+      selectedColumn.get
         .filter(allColumns.contains(_))
         .map(ConverterUtils.normalizeColName)
         .toSeq
@@ -168,28 +169,21 @@ case class GlutenCHCacheDataCommand(
         val executorId = value._1
         if (parts.nonEmpty) {
           val onePart = parts(0)
-          val partNameList = parts.map(_.name).toSeq
-          // starts and lengths is useless for write
-          val partRanges = Seq.range(0L, partNameList.length).map(_ => long2Long(0L)).asJava
-
           val extensionTableNode = ExtensionTableBuilder.makeExtensionTable(
-            -1,
-            -1,
             onePart.database,
             onePart.table,
             ClickhouseSnapshot.genSnapshotId(snapshot),
             onePart.tablePath,
             pathToCache.toString,
-            snapshot.metadata.configuration.getOrElse("orderByKey", ""),
+            snapshot.metadata.configuration
+              .getOrElse("orderByKey", StorageMeta.DEFAULT_ORDER_BY_KEY),
             snapshot.metadata.configuration.getOrElse("lowCardKey", ""),
             snapshot.metadata.configuration.getOrElse("minmaxIndexKey", ""),
             snapshot.metadata.configuration.getOrElse("bloomfilterIndexKey", ""),
             snapshot.metadata.configuration.getOrElse("setIndexKey", ""),
             snapshot.metadata.configuration.getOrElse("primaryKey", ""),
-            partNameList.asJava,
-            partRanges,
-            partRanges,
-            ConverterUtils.convertNamedStructJson(snapshot.metadata.schema),
+            PartSerializer.fromPartNames(parts.map(_.name).toSeq),
+            snapshot.metadata.schema,
             snapshot.metadata.configuration.asJava,
             new JList[String]()
           )
@@ -207,7 +201,7 @@ case class GlutenCHCacheDataCommand(
             (
               executorId,
               executor.executorEndpointRef.ask[CacheJobInfo](
-                GlutenMergeTreeCacheLoad(tableMessage, selectedColumns.toSet.asJava)
+                GlutenMergeTreeCacheLoad(tableMessage, selectedColumns.toSet.asJava, onlyMetaCache)
               )))
         })
     } else {
@@ -219,7 +213,7 @@ case class GlutenCHCacheDataCommand(
             (
               value._1,
               executorData.executorEndpointRef.ask[CacheJobInfo](
-                GlutenMergeTreeCacheLoad(value._2, selectedColumns.toSet.asJava)
+                GlutenMergeTreeCacheLoad(value._2, selectedColumns.toSet.asJava, onlyMetaCache)
               )))
         })
     }

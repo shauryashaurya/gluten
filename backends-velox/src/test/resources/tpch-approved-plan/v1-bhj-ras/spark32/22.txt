@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (40)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (28)
+   VeloxColumnarToRow (28)
    +- ^ SortExecTransformer (26)
       +- ^ InputIteratorTransformer (25)
          +- ShuffleQueryStage (23)
@@ -16,12 +16,12 @@ AdaptiveSparkPlan (40)
                                     +- ^ FlushableHashAggregateExecTransformer (11)
                                        +- ^ ProjectExecTransformer (10)
                                           +- ^ BroadcastHashJoinExecTransformer LeftAnti BuildRight (9)
-                                             :- ^ NoopFilter (2)
-                                             :  +- ^ Scan parquet (1)
+                                             :- ^ FilterExecTransformer (2)
+                                             :  +- ^ ScanTransformer parquet  (1)
                                              +- ^ InputIteratorTransformer (8)
                                                 +- BroadcastQueryStage (6)
                                                    +- ColumnarBroadcastExchange (5)
-                                                      +- ^ Scan parquet (3)
+                                                      +- ^ ScanTransformer parquet  (3)
 +- == Initial Plan ==
    Sort (39)
    +- Exchange (38)
@@ -36,18 +36,18 @@ AdaptiveSparkPlan (40)
                         +- Scan parquet (31)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(c_acctbal)]
 ReadSchema: struct<c_custkey:bigint,c_phone:string,c_acctbal:decimal(12,2)>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [3]: [c_custkey#X, c_phone#X, c_acctbal#X]
-Arguments: [c_custkey#X, c_phone#X, c_acctbal#X]
+Arguments: ((isnotnull(c_acctbal#X) AND substring(c_phone#X, 1, 2) IN (13,31,23,29,30,18,17)) AND (cast(c_acctbal#X as decimal(16,6)) > Subquery subquery#X, [id=#X]))
 
-(3) Scan parquet
+(3) ScanTransformer parquet 
 Output [1]: [o_custkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
@@ -150,7 +150,7 @@ Arguments: [cntrycode#X ASC NULLS FIRST], true, 0
 Input [3]: [cntrycode#X, numcust#X, totacctbal#X]
 Arguments: false
 
-(28) VeloxColumnarToRowExec
+(28) VeloxColumnarToRow
 Input [3]: [cntrycode#X, numcust#X, totacctbal#X]
 
 (29) Scan parquet

@@ -16,7 +16,7 @@
  */
 package org.apache.gluten.extension
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.SparkSession
@@ -37,15 +37,13 @@ import org.apache.spark.sql.types._
 // Under ch backend, the StringType can be directly converted into DateType,
 //     and the functions `from_unixtime` and `unix_timestamp` can be optimized here.
 // Optimized result is `to_date(stringType)`
-class RewriteToDateExpresstionRule(session: SparkSession, conf: SQLConf)
-  extends Rule[LogicalPlan]
-  with Logging {
+class RewriteToDateExpresstionRule(spark: SparkSession) extends Rule[LogicalPlan] with Logging {
 
   override def apply(plan: LogicalPlan): LogicalPlan = {
     if (
       plan.resolved &&
-      GlutenConfig.getConf.enableGluten &&
-      GlutenConfig.getConf.enableCHRewriteDateConversion
+      GlutenConfig.get.enableGluten &&
+      GlutenConfig.get.enableCHRewriteDateConversion
     ) {
       visitPlan(plan)
     } else {

@@ -1,7 +1,7 @@
 == Physical Plan ==
 AdaptiveSparkPlan (131)
 +- == Final Plan ==
-   VeloxColumnarToRowExec (86)
+   VeloxColumnarToRow (86)
    +- ^ SortExecTransformer (84)
       +- ^ InputIteratorTransformer (83)
          +- ShuffleQueryStage (81)
@@ -33,41 +33,41 @@ AdaptiveSparkPlan (131)
                                                 :     :     :     :     :     :     :  +- BroadcastQueryStage (6)
                                                 :     :     :     :     :     :     :     +- ColumnarBroadcastExchange (5)
                                                 :     :     :     :     :     :     :        +- ^ ProjectExecTransformer (3)
-                                                :     :     :     :     :     :     :           +- ^ NoopFilter (2)
-                                                :     :     :     :     :     :     :              +- ^ Scan parquet (1)
-                                                :     :     :     :     :     :     +- ^ NoopFilter (10)
-                                                :     :     :     :     :     :        +- ^ Scan parquet (9)
+                                                :     :     :     :     :     :     :           +- ^ FilterExecTransformer (2)
+                                                :     :     :     :     :     :     :              +- ^ ScanTransformer parquet  (1)
+                                                :     :     :     :     :     :     +- ^ FilterExecTransformer (10)
+                                                :     :     :     :     :     :        +- ^ ScanTransformer parquet  (9)
                                                 :     :     :     :     :     +- ^ InputIteratorTransformer (19)
                                                 :     :     :     :     :        +- BroadcastQueryStage (17)
                                                 :     :     :     :     :           +- ColumnarBroadcastExchange (16)
-                                                :     :     :     :     :              +- ^ NoopFilter (14)
-                                                :     :     :     :     :                 +- ^ Scan parquet (13)
+                                                :     :     :     :     :              +- ^ FilterExecTransformer (14)
+                                                :     :     :     :     :                 +- ^ ScanTransformer parquet  (13)
                                                 :     :     :     :     +- ^ InputIteratorTransformer (28)
                                                 :     :     :     :        +- BroadcastQueryStage (26)
                                                 :     :     :     :           +- ColumnarBroadcastExchange (25)
-                                                :     :     :     :              +- ^ NoopFilter (23)
-                                                :     :     :     :                 +- ^ Scan parquet (22)
+                                                :     :     :     :              +- ^ FilterExecTransformer (23)
+                                                :     :     :     :                 +- ^ ScanTransformer parquet  (22)
                                                 :     :     :     +- ^ InputIteratorTransformer (37)
                                                 :     :     :        +- BroadcastQueryStage (35)
                                                 :     :     :           +- ColumnarBroadcastExchange (34)
-                                                :     :     :              +- ^ NoopFilter (32)
-                                                :     :     :                 +- ^ Scan parquet (31)
+                                                :     :     :              +- ^ FilterExecTransformer (32)
+                                                :     :     :                 +- ^ ScanTransformer parquet  (31)
                                                 :     :     +- ^ InputIteratorTransformer (46)
                                                 :     :        +- BroadcastQueryStage (44)
                                                 :     :           +- ColumnarBroadcastExchange (43)
-                                                :     :              +- ^ NoopFilter (41)
-                                                :     :                 +- ^ Scan parquet (40)
+                                                :     :              +- ^ FilterExecTransformer (41)
+                                                :     :                 +- ^ ScanTransformer parquet  (40)
                                                 :     +- ^ InputIteratorTransformer (55)
                                                 :        +- BroadcastQueryStage (53)
                                                 :           +- ColumnarBroadcastExchange (52)
-                                                :              +- ^ NoopFilter (50)
-                                                :                 +- ^ Scan parquet (49)
+                                                :              +- ^ FilterExecTransformer (50)
+                                                :                 +- ^ ScanTransformer parquet  (49)
                                                 +- ^ InputIteratorTransformer (65)
                                                    +- BroadcastQueryStage (63)
                                                       +- ColumnarBroadcastExchange (62)
                                                          +- ^ ProjectExecTransformer (60)
-                                                            +- ^ NoopFilter (59)
-                                                               +- ^ Scan parquet (58)
+                                                            +- ^ FilterExecTransformer (59)
+                                                               +- ^ ScanTransformer parquet  (58)
 +- == Initial Plan ==
    Sort (130)
    +- Exchange (129)
@@ -115,16 +115,16 @@ AdaptiveSparkPlan (131)
                               +- Scan parquet (120)
 
 
-(1) Scan parquet
+(1) ScanTransformer parquet 
 Output [2]: [p_partkey#X, p_type#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(p_type), EqualTo(p_type,ECONOMY ANODIZED STEEL), IsNotNull(p_partkey)]
 ReadSchema: struct<p_partkey:bigint,p_type:string>
 
-(2) NoopFilter
+(2) FilterExecTransformer
 Input [2]: [p_partkey#X, p_type#X]
-Arguments: [p_partkey#X, p_type#X]
+Arguments: ((isnotnull(p_type#X) AND (p_type#X = ECONOMY ANODIZED STEEL)) AND isnotnull(p_partkey#X))
 
 (3) ProjectExecTransformer
 Output [1]: [p_partkey#X]
@@ -148,16 +148,16 @@ Input [1]: [p_partkey#X]
 (8) InputIteratorTransformer
 Input [1]: [p_partkey#X]
 
-(9) Scan parquet
+(9) ScanTransformer parquet 
 Output [5]: [l_orderkey#X, l_partkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(l_partkey), IsNotNull(l_suppkey), IsNotNull(l_orderkey)]
 ReadSchema: struct<l_orderkey:bigint,l_partkey:bigint,l_suppkey:bigint,l_extendedprice:decimal(12,2),l_discount:decimal(12,2)>
 
-(10) NoopFilter
+(10) FilterExecTransformer
 Input [5]: [l_orderkey#X, l_partkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X]
-Arguments: [l_orderkey#X, l_partkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X]
+Arguments: ((isnotnull(l_partkey#X) AND isnotnull(l_suppkey#X)) AND isnotnull(l_orderkey#X))
 
 (11) BroadcastHashJoinExecTransformer
 Left keys [1]: [p_partkey#X]
@@ -168,16 +168,16 @@ Join condition: None
 Output [4]: [l_orderkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X]
 Input [6]: [p_partkey#X, l_orderkey#X, l_partkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X]
 
-(13) Scan parquet
+(13) ScanTransformer parquet 
 Output [2]: [s_suppkey#X, s_nationkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(s_suppkey), IsNotNull(s_nationkey)]
 ReadSchema: struct<s_suppkey:bigint,s_nationkey:bigint>
 
-(14) NoopFilter
+(14) FilterExecTransformer
 Input [2]: [s_suppkey#X, s_nationkey#X]
-Arguments: [s_suppkey#X, s_nationkey#X]
+Arguments: (isnotnull(s_suppkey#X) AND isnotnull(s_nationkey#X))
 
 (15) WholeStageCodegenTransformer (X)
 Input [2]: [s_suppkey#X, s_nationkey#X]
@@ -206,16 +206,16 @@ Join condition: None
 Output [4]: [l_orderkey#X, l_extendedprice#X, l_discount#X, s_nationkey#X]
 Input [6]: [l_orderkey#X, l_suppkey#X, l_extendedprice#X, l_discount#X, s_suppkey#X, s_nationkey#X]
 
-(22) Scan parquet
+(22) ScanTransformer parquet 
 Output [3]: [o_orderkey#X, o_custkey#X, o_orderdate#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(o_orderdate), GreaterThanOrEqual(o_orderdate,1995-01-01), LessThanOrEqual(o_orderdate,1996-12-31), IsNotNull(o_orderkey), IsNotNull(o_custkey)]
 ReadSchema: struct<o_orderkey:bigint,o_custkey:bigint,o_orderdate:date>
 
-(23) NoopFilter
+(23) FilterExecTransformer
 Input [3]: [o_orderkey#X, o_custkey#X, o_orderdate#X]
-Arguments: [o_orderkey#X, o_custkey#X, o_orderdate#X]
+Arguments: ((((isnotnull(o_orderdate#X) AND (o_orderdate#X >= 1995-01-01)) AND (o_orderdate#X <= 1996-12-31)) AND isnotnull(o_orderkey#X)) AND isnotnull(o_custkey#X))
 
 (24) WholeStageCodegenTransformer (X)
 Input [3]: [o_orderkey#X, o_custkey#X, o_orderdate#X]
@@ -244,16 +244,16 @@ Join condition: None
 Output [5]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_custkey#X, o_orderdate#X]
 Input [7]: [l_orderkey#X, l_extendedprice#X, l_discount#X, s_nationkey#X, o_orderkey#X, o_custkey#X, o_orderdate#X]
 
-(31) Scan parquet
+(31) ScanTransformer parquet 
 Output [2]: [c_custkey#X, c_nationkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(c_custkey), IsNotNull(c_nationkey)]
 ReadSchema: struct<c_custkey:bigint,c_nationkey:bigint>
 
-(32) NoopFilter
+(32) FilterExecTransformer
 Input [2]: [c_custkey#X, c_nationkey#X]
-Arguments: [c_custkey#X, c_nationkey#X]
+Arguments: (isnotnull(c_custkey#X) AND isnotnull(c_nationkey#X))
 
 (33) WholeStageCodegenTransformer (X)
 Input [2]: [c_custkey#X, c_nationkey#X]
@@ -282,16 +282,16 @@ Join condition: None
 Output [5]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_orderdate#X, c_nationkey#X]
 Input [7]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_custkey#X, o_orderdate#X, c_custkey#X, c_nationkey#X]
 
-(40) Scan parquet
+(40) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_regionkey#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(n_nationkey), IsNotNull(n_regionkey)]
 ReadSchema: struct<n_nationkey:bigint,n_regionkey:bigint>
 
-(41) NoopFilter
+(41) FilterExecTransformer
 Input [2]: [n_nationkey#X, n_regionkey#X]
-Arguments: [n_nationkey#X, n_regionkey#X]
+Arguments: (isnotnull(n_nationkey#X) AND isnotnull(n_regionkey#X))
 
 (42) WholeStageCodegenTransformer (X)
 Input [2]: [n_nationkey#X, n_regionkey#X]
@@ -320,16 +320,16 @@ Join condition: None
 Output [5]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_orderdate#X, n_regionkey#X]
 Input [7]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_orderdate#X, c_nationkey#X, n_nationkey#X, n_regionkey#X]
 
-(49) Scan parquet
+(49) ScanTransformer parquet 
 Output [2]: [n_nationkey#X, n_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(n_nationkey)]
 ReadSchema: struct<n_nationkey:bigint,n_name:string>
 
-(50) NoopFilter
+(50) FilterExecTransformer
 Input [2]: [n_nationkey#X, n_name#X]
-Arguments: [n_nationkey#X, n_name#X]
+Arguments: isnotnull(n_nationkey#X)
 
 (51) WholeStageCodegenTransformer (X)
 Input [2]: [n_nationkey#X, n_name#X]
@@ -358,16 +358,16 @@ Join condition: None
 Output [5]: [l_extendedprice#X, l_discount#X, o_orderdate#X, n_regionkey#X, n_name#X]
 Input [7]: [l_extendedprice#X, l_discount#X, s_nationkey#X, o_orderdate#X, n_regionkey#X, n_nationkey#X, n_name#X]
 
-(58) Scan parquet
+(58) ScanTransformer parquet 
 Output [2]: [r_regionkey#X, r_name#X]
 Batched: true
 Location: InMemoryFileIndex [*]
 PushedFilters: [IsNotNull(r_name), EqualTo(r_name,AMERICA), IsNotNull(r_regionkey)]
 ReadSchema: struct<r_regionkey:bigint,r_name:string>
 
-(59) NoopFilter
+(59) FilterExecTransformer
 Input [2]: [r_regionkey#X, r_name#X]
-Arguments: [r_regionkey#X, r_name#X]
+Arguments: ((isnotnull(r_name#X) AND (r_name#X = AMERICA)) AND isnotnull(r_regionkey#X))
 
 (60) ProjectExecTransformer
 Output [1]: [r_regionkey#X]
@@ -397,11 +397,11 @@ Right keys [1]: [r_regionkey#X]
 Join condition: None
 
 (67) ProjectExecTransformer
-Output [4]: [year(o_orderdate#X) AS o_year#X, CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2), true))), DecimalType(26,4), true) AS volume#X, n_name#X AS nation#X, CASE WHEN (n_name#X = BRAZIL) THEN CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2), true))), DecimalType(26,4), true) ELSE 0.0000 END AS _pre_X#X]
+Output [3]: [year(o_orderdate#X) AS o_year#X, CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2), true))), DecimalType(26,4), true) AS volume#X, CASE WHEN (n_name#X = BRAZIL) THEN CheckOverflow((promote_precision(cast(l_extendedprice#X as decimal(13,2))) * promote_precision(CheckOverflow((1.00 - promote_precision(cast(l_discount#X as decimal(13,2)))), DecimalType(13,2), true))), DecimalType(26,4), true) ELSE 0.0000 END AS _pre_X#X]
 Input [6]: [l_extendedprice#X, l_discount#X, o_orderdate#X, n_regionkey#X, n_name#X, r_regionkey#X]
 
 (68) FlushableHashAggregateExecTransformer
-Input [4]: [o_year#X, volume#X, nation#X, _pre_X#X]
+Input [3]: [o_year#X, volume#X, _pre_X#X]
 Keys [1]: [o_year#X]
 Functions [2]: [partial_sum(_pre_X#X), partial_sum(volume#X)]
 Aggregate Attributes [4]: [sum#X, isEmpty#X, sum#X, isEmpty#X]
@@ -474,7 +474,7 @@ Arguments: [o_year#X ASC NULLS FIRST], true, 0
 Input [2]: [o_year#X, mkt_share#X]
 Arguments: false
 
-(86) VeloxColumnarToRowExec
+(86) VeloxColumnarToRow
 Input [2]: [o_year#X, mkt_share#X]
 
 (87) Scan parquet

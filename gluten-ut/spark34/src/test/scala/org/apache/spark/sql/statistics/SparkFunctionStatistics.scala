@@ -16,8 +16,8 @@
  */
 package org.apache.spark.sql.statistics
 
-import org.apache.gluten.GlutenConfig
-import org.apache.gluten.extension.GlutenPlan
+import org.apache.gluten.config.GlutenConfig
+import org.apache.gluten.execution.GlutenPlan
 import org.apache.gluten.utils.{BackendTestUtils, SystemParameters}
 
 import org.apache.spark.sql.{GlutenTestConstants, QueryTest, SparkSession}

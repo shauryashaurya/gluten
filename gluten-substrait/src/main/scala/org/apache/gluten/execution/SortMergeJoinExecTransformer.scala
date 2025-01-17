@@ -152,7 +152,7 @@ abstract class SortMergeJoinExecTransformerBase(
     case LeftSemi =>
       JoinRel.JoinType.JOIN_TYPE_LEFT_SEMI
     case LeftAnti =>
-      JoinRel.JoinType.JOIN_TYPE_ANTI
+      JoinRel.JoinType.JOIN_TYPE_LEFT_ANTI
     case _ =>
       // TODO: Support cross join with Cross Rel
       // TODO: Support existence join
@@ -250,11 +250,6 @@ case class SortMergeJoinExecTransformer(
     projectList) {
 
   override protected def doValidateInternal(): ValidationResult = {
-    // Firstly, need to check if the Substrait plan for this operator can be successfully generated.
-    if (substraitJoinType == JoinRel.JoinType.JOIN_TYPE_OUTER) {
-      return ValidationResult
-        .failed(s"Found unsupported join type of $joinType for velox smj: $substraitJoinType")
-    }
     super.doValidateInternal()
   }
 

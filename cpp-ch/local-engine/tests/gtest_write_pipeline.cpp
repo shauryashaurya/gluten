@@ -20,20 +20,32 @@
 #include <testConfig.h>
 #include <Core/Settings.h>
 #include <Disks/ObjectStorages/HDFS/HDFSObjectStorage.h>
-#include <Parser/SerializedPlanParser.h>
-#include <Parser/SubstraitParserUtils.h>
+#include <Interpreters/Context.h>
+#include <Parser/LocalExecutor.h>
+#include <Parser/RelParsers/WriteRelParser.h>
 #include <Parser/TypeParser.h>
-#include <Parser/WriteRelParser.h>
-#include <Parsers/ASTFunction.h>
 #include <Parsers/ParserCreateQuery.h>
 #include <Parsers/parseQuery.h>
+#include <Processors/Chunk.h>
 #include <Storages/ObjectStorage/HDFS/Configuration.h>
 #include <Storages/ObjectStorage/StorageObjectStorageSink.h>
-#include <Storages/Output/FileWriterWrappers.h>
+#include <Storages/Output/NormalFileWriter.h>
+#include <google/protobuf/wrappers.pb.h>
 #include <gtest/gtest.h>
-#include <Common/CHUtil.h>
+#include <substrait/plan.pb.h>
+#include <Poco/StringTokenizer.h>
 #include <Common/DebugUtils.h>
+#include <Common/QueryContext.h>
 
+namespace DB::Setting
+{
+extern const SettingsUInt64 max_parser_depth;
+extern const SettingsUInt64 max_parser_backtracks;
+extern const SettingsBool allow_settings_after_format_in_insert;
+extern const SettingsUInt64 max_query_size;
+extern const SettingsUInt64 min_insert_block_size_rows;
+extern const SettingsUInt64 min_insert_block_size_bytes;
+}
 
 using namespace local_engine;
 using namespace DB;
@@ -58,7 +70,7 @@ Chunk testChunk()
 TEST(LocalExecutor, StorageObjectStorageSink)
 {
     /// 0. Create ObjectStorage for HDFS
-    auto settings = SerializedPlanParser::global_context->getSettingsRef();
+    auto settings = QueryContext::globalContext()->getSettingsRef();
     const std::string query
         = R"(CREATE TABLE hdfs_engine_xxxx (name String, value UInt32) ENGINE=HDFS('hdfs://localhost:8020/clickhouse/test2', 'Parquet'))";
     DB::ParserCreateQuery parser;
@@ -73,8 +85,8 @@ TEST(LocalExecutor, StorageObjectStorageSink)
         "QUERY TEST",
         /* allow_multi_statements = */ false,
         0,
-        settings.max_parser_depth,
-        settings.max_parser_backtracks,
+        settings[Setting::max_parser_depth],
+        settings[Setting::max_parser_backtracks],
         true);
     auto & create = ast->as<ASTCreateQuery &>();
     auto arg = create.storage->children[0];
@@ -82,10 +94,10 @@ TEST(LocalExecutor, StorageObjectStorageSink)
     EXPECT_TRUE(func && func->name == "HDFS");
 
     DB::StorageHDFSConfiguration config;
-    StorageObjectStorage::Configuration::initialize(config, arg->children[0]->children, SerializedPlanParser::global_context, false);
+    StorageObjectStorage::Configuration::initialize(config, arg->children[0]->children, QueryContext::globalContext(), false, nullptr);
 
     const std::shared_ptr<DB::HDFSObjectStorage> object_storage
-        = std::dynamic_pointer_cast<DB::HDFSObjectStorage>(config.createObjectStorage(SerializedPlanParser::global_context, false));
+        = std::dynamic_pointer_cast<DB::HDFSObjectStorage>(config.createObjectStorage(QueryContext::globalContext(), false));
     EXPECT_TRUE(object_storage != nullptr);
 
     RelativePathsWithMetadata files_with_metadata;
@@ -93,7 +105,7 @@ TEST(LocalExecutor, StorageObjectStorageSink)
 
     /// 1. Create ObjectStorageSink
     DB::StorageObjectStorageSink sink{
-        object_storage, config.clone(), {}, {{STRING(), "name"}, {UINT(), "value"}}, SerializedPlanParser::global_context, ""};
+        object_storage, config.clone(), {}, {{STRING(), "name"}, {UINT(), "value"}}, QueryContext::globalContext(), ""};
 
     /// 2. Create Chunk
     auto chunk = testChunk();
@@ -103,24 +115,20 @@ TEST(LocalExecutor, StorageObjectStorageSink)
 }
 
 
-INCBIN(resource_embedded_write_json, SOURCE_DIR "/utils/extern-local-engine/tests/json/native_write_plan.json");
+INCBIN(native_write, SOURCE_DIR "/utils/extern-local-engine/tests/json/native_write_plan.json");
 TEST(WritePipeline, SubstraitFileSink)
 {
-    const auto tmpdir = std::string{"file:///tmp/test_table/test"};
-    const auto filename = std::string{"data.parquet"};
-    const std::string split_template
+    const auto context = DB::Context::createCopy(QueryContext::globalContext());
+    GlutenWriteSettings settings{
+        .task_write_tmp_dir = "file:///tmp/test_table/test",
+        .task_write_filename_pattern = "data.parquet",
+    };
+    settings.set(context);
+
+    constexpr std::string_view split_template
         = R"({"items":[{"uriFile":"{replace_local_files}","length":"1399183","text":{"fieldDelimiter":"|","maxBlockSize":"8192"},"schema":{"names":["s_suppkey","s_name","s_address","s_nationkey","s_phone","s_acctbal","s_comment"],"struct":{"types":[{"i64":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"i64":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"decimal":{"scale":2,"precision":15,"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}}]}},"metadataColumns":[{}]}]})";
-    const std::string split
-        = replaceLocalFilesWildcards(split_template, GLUTEN_SOURCE_DIR("/backends-clickhouse/src/test/resources/csv-data/supplier.csv"));
-
-    const auto context = DB::Context::createCopy(SerializedPlanParser::global_context);
-    context->setSetting(local_engine::SPARK_TASK_WRITE_TMEP_DIR, tmpdir);
-    context->setSetting(local_engine::SPARK_TASK_WRITE_FILENAME, filename);
-    SerializedPlanParser parser(context);
-    parser.addSplitInfo(local_engine::JsonStringToBinary<substrait::ReadRel::LocalFiles>(split));
-
-    const auto plan = local_engine::JsonStringToMessage<substrait::Plan>(
-        {reinterpret_cast<const char *>(gresource_embedded_write_jsonData), gresource_embedded_write_jsonSize});
+    constexpr std::string_view file{GLUTEN_SOURCE_DIR("/backends-clickhouse/src/test/resources/csv-data/supplier.csv")};
+    auto [plan, local_executor] = test::create_plan_and_executor(EMBEDDED_PLAN(native_write), split_template, file, context);
 
     EXPECT_EQ(1, plan.relations_size());
     const substrait::PlanRel & root_rel = plan.relations().at(0);
@@ -131,15 +139,6 @@ TEST(WritePipeline, SubstraitFileSink)
     EXPECT_TRUE(write_rel.has_named_table());
 
     const substrait::NamedObjectWrite & named_table = write_rel.named_table();
-
-    google::protobuf::StringValue optimization;
-    named_table.advanced_extension().optimization().UnpackTo(&optimization);
-    auto config = local_engine::parse_write_parameter(optimization.value());
-    EXPECT_EQ(2, config.size());
-    EXPECT_EQ("parquet", config["format"]);
-    EXPECT_EQ("1", config["isSnappy"]);
-
-
     EXPECT_TRUE(write_rel.has_table_schema());
     const substrait::NamedStruct & table_schema = write_rel.table_schema();
     auto block = TypeParser::buildBlockFromNamedStruct(table_schema);
@@ -147,41 +146,37 @@ TEST(WritePipeline, SubstraitFileSink)
     DB::Names expected{"s_suppkey", "s_name", "s_address", "s_nationkey", "s_phone", "s_acctbal", "s_comment111"};
     EXPECT_EQ(expected, names);
 
-    auto partitionCols = collect_partition_cols(block, table_schema);
+    auto partitionCols = collect_partition_cols(block, table_schema, {});
     DB::Names expected_partition_cols;
     EXPECT_EQ(expected_partition_cols, partitionCols);
 
-
-    auto local_executor = parser.createExecutor(plan);
     EXPECT_TRUE(local_executor->hasNext());
     const Block & x = *local_executor->nextColumnar();
-    debug::headBlock(x);
+    std::cerr << debug::verticalShowString(x, 10, 50) << std::endl;
     EXPECT_EQ(1, x.rows());
     const auto & col_a = *(x.getColumns()[0]);
-    EXPECT_EQ(filename, col_a.getDataAt(0));
+    EXPECT_EQ(settings.task_write_filename_pattern, col_a.getDataAt(0));
     const auto & col_b = *(x.getColumns()[1]);
-    EXPECT_EQ(SubstraitFileSink::NO_PARTITION_ID, col_b.getDataAt(0));
+    EXPECT_EQ(WriteStatsBase::NO_PARTITION_ID, col_b.getDataAt(0));
     const auto & col_c = *(x.getColumns()[2]);
     EXPECT_EQ(10000, col_c.getInt(0));
 }
 
-INCBIN(resource_embedded_write_one_partition_json, SOURCE_DIR "/utils/extern-local-engine/tests/json/native_write_one_partition.json");
+INCBIN(native_write_one_partition, SOURCE_DIR "/utils/extern-local-engine/tests/json/native_write_one_partition.json");
 
-TEST(WritePipeline, SubstraitPartitionedFileSink)
+/*TEST(WritePipeline, SubstraitPartitionedFileSink)
 {
-    const std::string split_template
+    const auto context = DB::Context::createCopy(QueryContext::globalContext());
+    GlutenWriteSettings settings{
+        .task_write_tmp_dir = "file:///tmp/test_table/test_partition",
+        .task_write_filename_pattern = "data.parquet",
+    };
+    settings.set(context);
+
+    constexpr std::string_view split_template
         = R"({"items":[{"uriFile":"{replace_local_files}","length":"1399183","text":{"fieldDelimiter":"|","maxBlockSize":"8192"},"schema":{"names":["s_suppkey","s_name","s_address","s_nationkey","s_phone","s_acctbal","s_comment"],"struct":{"types":[{"i64":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"i64":{"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}},{"decimal":{"scale":2,"precision":15,"nullability":"NULLABILITY_NULLABLE"}},{"string":{"nullability":"NULLABILITY_NULLABLE"}}]}},"metadataColumns":[{}]}]})";
-    const std::string split
-        = replaceLocalFilesWildcards(split_template, GLUTEN_SOURCE_DIR("/backends-clickhouse/src/test/resources/csv-data/supplier.csv"));
-
-    const auto context = DB::Context::createCopy(SerializedPlanParser::global_context);
-    context->setSetting(local_engine::SPARK_TASK_WRITE_TMEP_DIR, std::string{"file:///tmp/test_table/test_partition"});
-    context->setSetting(local_engine::SPARK_TASK_WRITE_FILENAME, std::string{"data.parquet"});
-    SerializedPlanParser parser(context);
-    parser.addSplitInfo(local_engine::JsonStringToBinary<substrait::ReadRel::LocalFiles>(split));
-
-    const auto plan = local_engine::JsonStringToMessage<substrait::Plan>(
-        {reinterpret_cast<const char *>(gresource_embedded_write_one_partition_jsonData), gresource_embedded_write_one_partition_jsonSize});
+    constexpr std::string_view file{GLUTEN_SOURCE_DIR("/backends-clickhouse/src/test/resources/csv-data/supplier.csv")};
+    auto [plan, local_executor] = test::create_plan_and_executor(EMBEDDED_PLAN(native_write_one_partition), split_template, file, context);
 
     EXPECT_EQ(1, plan.relations_size());
     const substrait::PlanRel & root_rel = plan.relations().at(0);
@@ -190,16 +185,6 @@ TEST(WritePipeline, SubstraitPartitionedFileSink)
 
     const substrait::WriteRel & write_rel = root_rel.root().input().write();
     EXPECT_TRUE(write_rel.has_named_table());
-
-    const substrait::NamedObjectWrite & named_table = write_rel.named_table();
-
-    google::protobuf::StringValue optimization;
-    named_table.advanced_extension().optimization().UnpackTo(&optimization);
-    auto config = local_engine::parse_write_parameter(optimization.value());
-    EXPECT_EQ(2, config.size());
-    EXPECT_EQ("parquet", config["format"]);
-    EXPECT_EQ("1", config["isSnappy"]);
-
 
     EXPECT_TRUE(write_rel.has_table_schema());
     const substrait::NamedStruct & table_schema = write_rel.table_schema();
@@ -208,33 +193,30 @@ TEST(WritePipeline, SubstraitPartitionedFileSink)
     DB::Names expected{"s_suppkey", "s_name", "s_address", "s_phone", "s_acctbal", "s_comment", "s_nationkey"};
     EXPECT_EQ(expected, names);
 
-    auto partitionCols = local_engine::collect_partition_cols(block, table_schema);
+    auto partitionCols = local_engine::collect_partition_cols(block, table_schema, {});
     DB::Names expected_partition_cols{"s_nationkey"};
     EXPECT_EQ(expected_partition_cols, partitionCols);
 
-    auto local_executor = parser.createExecutor(plan);
     EXPECT_TRUE(local_executor->hasNext());
     const Block & x = *local_executor->nextColumnar();
     debug::headBlock(x, 25);
     EXPECT_EQ(25, x.rows());
-    // const auto & col_b = *(x.getColumns()[1]);
-    // EXPECT_EQ(16, col_b.getInt(0));
-}
+}*/
 
 TEST(WritePipeline, ComputePartitionedExpression)
 {
-    const auto context = DB::Context::createCopy(SerializedPlanParser::global_context);
+    const auto context = DB::Context::createCopy(QueryContext::globalContext());
 
-    auto partition_by = SubstraitPartitionedFileSink::make_partition_expression({"s_nationkey", "name"});
+    Block sample_block{{STRING(), "name"}, {UINT(), "s_nationkey"}};
+    auto partition_by = SubstraitPartitionedFileSink::make_partition_expression({"s_nationkey", "name"}, sample_block);
+    // auto partition_by = printColumn("s_nationkey");
 
     ASTs arguments(1, partition_by);
     ASTPtr partition_by_string = makeASTFunction("toString", std::move(arguments));
 
-    Block sample_block{{STRING(), "name"}, {UINT(), "s_nationkey"}};
+
     auto syntax_result = TreeRewriter(context).analyze(partition_by_string, sample_block.getNamesAndTypesList());
     auto partition_by_expr = ExpressionAnalyzer(partition_by_string, syntax_result, context).getActions(false);
-
-
     auto partition_by_column_name = partition_by_string->getColumnName();
 
     Chunk chunk = testChunk();

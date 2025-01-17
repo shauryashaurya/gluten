@@ -32,24 +32,22 @@ namespace local_engine
 {
 static DB::ITransformingStep::Traits getTraits()
 {
-    return DB::ITransformingStep::Traits
-    {
+    return DB::ITransformingStep::Traits{
         {
             .preserves_number_of_streams = true,
             .preserves_sorting = false,
         },
         {
             .preserves_number_of_rows = false,
-        }
-    };
+        }};
 }
 
-ReplicateRowsStep::ReplicateRowsStep(const DB::DataStream & input_stream)
-    : ITransformingStep(input_stream, transformHeader(input_stream.header), getTraits())
+ReplicateRowsStep::ReplicateRowsStep(const DB::Block& input_header)
+    : ITransformingStep(input_header, transformHeader(input_header), getTraits())
 {
 }
 
-DB::Block ReplicateRowsStep::transformHeader(const DB::Block& input)
+DB::Block ReplicateRowsStep::transformHeader(const DB::Block & input)
 {
     DB::Block output;
     for (int i = 1; i < input.columns(); i++)
@@ -59,20 +57,14 @@ DB::Block ReplicateRowsStep::transformHeader(const DB::Block& input)
     return output;
 }
 
-void ReplicateRowsStep::transformPipeline(
-    DB::QueryPipelineBuilder & pipeline,
-    const DB::BuildQueryPipelineSettings & /*settings*/)
+void ReplicateRowsStep::transformPipeline(DB::QueryPipelineBuilder & pipeline, const DB::BuildQueryPipelineSettings & /*settings*/)
 {
-    pipeline.addSimpleTransform(
-        [&](const DB::Block & header)
-        {
-            return std::make_shared<ReplicateRowsTransform>(header);
-        });
+    pipeline.addSimpleTransform([&](const DB::Block & header) { return std::make_shared<ReplicateRowsTransform>(header); });
 }
 
-void ReplicateRowsStep::updateOutputStream()
+void ReplicateRowsStep::updateOutputHeader()
 {
-    output_stream = createOutputStream(input_streams.front(), transformHeader(input_streams.front().header), getDataStreamTraits());
+    output_header = transformHeader(input_headers.front());
 }
 
 ReplicateRowsTransform::ReplicateRowsTransform(const DB::Block & input_header_)

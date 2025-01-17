@@ -16,36 +16,48 @@
  */
 package org.apache.gluten.backendsapi
 
-import org.apache.gluten.GlutenConfig
+import org.apache.gluten.config.GlutenConfig
 import org.apache.gluten.extension.ValidationResult
+import org.apache.gluten.extension.columnar.transition.Convention
+import org.apache.gluten.substrait.rel.LocalFilesNode
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
 
-import org.apache.spark.SparkConf
 import org.apache.spark.sql.catalyst.catalog.BucketSpec
 import org.apache.spark.sql.catalyst.expressions.{Expression, NamedExpression}
 import org.apache.spark.sql.catalyst.plans._
-import org.apache.spark.sql.catalyst.plans.physical.Partitioning
-import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.connector.read.Scan
 import org.apache.spark.sql.execution.command.CreateDataSourceTableAsSelectCommand
 import org.apache.spark.sql.execution.datasources.{FileFormat, InsertIntoHadoopFsRelationCommand}
 import org.apache.spark.sql.types.StructField
+import org.apache.spark.util.SerializableConfiguration
 
 trait BackendSettingsApi {
-  def validateScan(
+
+  /** The columnar-batch type this backend is by default using. */
+  def primaryBatchType: Convention.BatchType
+
+  def validateScanExec(
       format: ReadFileFormat,
       fields: Array[StructField],
-      partTable: Boolean,
       rootPaths: Seq[String],
-      paths: Seq[String]): ValidationResult = ValidationResult.succeeded
+      properties: Map[String, String],
+      serializableHadoopConf: Option[SerializableConfiguration] = None): ValidationResult =
+    ValidationResult.succeeded
+
+  def getSubstraitReadFileFormatV1(fileFormat: FileFormat): LocalFilesNode.ReadFileFormat
+
+  def getSubstraitReadFileFormatV2(scan: Scan): LocalFilesNode.ReadFileFormat
+
   def supportWriteFilesExec(
       format: FileFormat,
       fields: Array[StructField],
       bucketSpec: Option[BucketSpec],
+      isPartitionedTable: Boolean,
       options: Map[String, String]): ValidationResult = ValidationResult.succeeded
+
   def supportNativeWrite(fields: Array[StructField]): Boolean = true
   def supportNativeMetadataColumns(): Boolean = false
   def supportNativeRowIndexColumn(): Boolean = false
-  def supportNativeInputFileRelatedExpr(): Boolean = false
 
   def supportExpandExec(): Boolean = false
   def supportSortExec(): Boolean = false
@@ -57,7 +69,7 @@ trait BackendSettingsApi {
     false
   }
   def supportColumnarShuffleExec(): Boolean = {
-    GlutenConfig.getConf.enableColumnarShuffle
+    GlutenConfig.get.enableColumnarShuffle
   }
   def enableJoinKeysRewrite(): Boolean = true
   def supportHashBuildJoinTypeOnLeft: JoinType => Boolean = {
@@ -70,27 +82,15 @@ trait BackendSettingsApi {
   }
   def supportStructType(): Boolean = false
 
+  def structFieldToLowerCase(): Boolean = true
+
   // Whether to fallback aggregate at the same time if its empty-output child is fallen back.
   def fallbackAggregateWithEmptyOutputChild(): Boolean = false
 
-  def disableVanillaColumnarReaders(conf: SparkConf): Boolean =
-    !conf.getBoolean(
-      GlutenConfig.VANILLA_VECTORIZED_READERS_ENABLED.key,
-      GlutenConfig.VANILLA_VECTORIZED_READERS_ENABLED.defaultValue.get)
-
   def recreateJoinExecOnFallback(): Boolean = false
 
-  /**
-   * A shuffle key may be an expression. We would add a projection for this expression shuffle key
-   * and make it into a new column which the shuffle will refer to. But we need to remove it from
-   * the result columns from the shuffle.
-   */
-  def supportShuffleWithProject(outputPartitioning: Partitioning, child: SparkPlan): Boolean = false
   def excludeScanExecFromCollapsedStage(): Boolean = false
   def rescaleDecimalArithmetic: Boolean = false
-
-  /** Get the config prefix for each backend */
-  def getBackendConfigPrefix: String
 
   def allowDecimalArithmetic: Boolean = true
 
@@ -106,9 +106,6 @@ trait BackendSettingsApi {
 
   def needOutputSchemaForPlan(): Boolean = false
 
-  /** Apply necessary conversions before passing to native side */
-  def resolveNativeConf(nativeConf: java.util.Map[String, String]): Unit = {}
-
   def insertPostProjectForGenerate(): Boolean = false
 
   def skipNativeCtas(ctas: CreateDataSourceTableAsSelectCommand): Boolean = false
@@ -123,8 +120,6 @@ trait BackendSettingsApi {
 
   def staticPartitionWriteOnly(): Boolean = false
 
-  def requiredInputFilePaths(): Boolean = false
-
   // TODO: Move this to test settings as used in UT only.
   def requireBloomFilterAggMightContainJointFallback(): Boolean = true
 
@@ -136,13 +131,13 @@ trait BackendSettingsApi {
 
   def supportCartesianProductExec(): Boolean = false
 
+  def supportCartesianProductExecWithCondition(): Boolean = true
+
   def supportBroadcastNestedLoopJoinExec(): Boolean = true
 
   def supportSampleExec(): Boolean = false
 
   def supportColumnarArrowUdf(): Boolean = false
-
-  def generateHdfsConfForLibhdfs(): Boolean = false
 
   def needPreComputeRangeFrameBoundary(): Boolean = false
 }

@@ -16,32 +16,27 @@
  */
 
 #pragma once
+#include <unordered_map>
+#include <Functions/SparkFunctionGetJsonObject.h>
+#include <Interpreters/Context_fwd.h>
+#include <Parser/ParserContext.h>
 #include <Parser/SerializedPlanParser.h>
 #include <substrait/algebra.pb.h>
-#include <substrait/type.pb.h>
-#include <Interpreters/Context_fwd.h>
-#include <Interpreters/Context.h>
-#include <unordered_map>
-#include <Common/Exception.h>
-#include <set>
-#include <Functions/SparkFunctionGetJsonObject.h>
 
-#include <Poco/Logger.h>
-#include <Common/logger_useful.h>
 
 namespace local_engine
 {
 class RelRewriter
 {
 public:
-    RelRewriter(SerializedPlanParser *parser_) : parser(parser_) {}
+    RelRewriter(ParserContextPtr parser_context_) : parser_context(parser_context_) { }
     virtual ~RelRewriter() = default;
     virtual void rewrite(substrait::Rel & rel) = 0;
-protected:
-    SerializedPlanParser *parser;
 
-    inline DB::ContextPtr getContext() { return parser->context; }
-    inline std::unordered_map<std::string, std::string> & getFunctionMapping() { return parser->function_mapping; }
+protected:
+    ParserContextPtr parser_context;
+
+    inline DB::ContextPtr getContext() const { return parser_context->queryContext(); }
 };
 
 }

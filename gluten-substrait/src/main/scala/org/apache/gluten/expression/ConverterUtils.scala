@@ -19,7 +19,6 @@ package org.apache.gluten.expression
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.exception.GlutenNotSupportException
 import org.apache.gluten.substrait.`type`._
-import org.apache.gluten.utils.SubstraitPlanPrinterUtil
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions._
@@ -29,7 +28,7 @@ import org.apache.spark.sql.types._
 import org.apache.spark.sql.vectorized.ColumnarBatch
 
 import com.google.protobuf.CodedInputStream
-import io.substrait.proto.{NamedStruct, Type}
+import io.substrait.proto.Type
 
 import java.util.{ArrayList => JArrayList, List => JList, Locale}
 
@@ -52,6 +51,14 @@ object ConverterUtils extends Logging {
   def normalizeColName(name: String): String = {
     val caseSensitive = SQLConf.get.caseSensitiveAnalysis
     if (caseSensitive) name else name.toLowerCase(Locale.ROOT)
+  }
+
+  def normalizeStructFieldName(name: String): String = {
+    if (BackendsApiManager.getSettings.structFieldToLowerCase()) {
+      normalizeColName(name)
+    } else {
+      name
+    }
   }
 
   def getShortAttributeName(attr: Attribute): String = {
@@ -133,28 +140,6 @@ object ConverterUtils extends Logging {
       case _ =>
     }
     nameList
-  }
-
-  /** Convert StructType to Json */
-  def convertNamedStructJson(tableSchema: StructType): String = {
-    val typeNodes = ConverterUtils.collectAttributeTypeNodes(tableSchema)
-    val nameList = tableSchema.fieldNames.map(normalizeColName)
-
-    val structBuilder = Type.Struct.newBuilder
-    for (typeNode <- typeNodes.asScala) {
-      structBuilder.addTypes(typeNode.toProtobuf)
-    }
-
-    val nStructBuilder = NamedStruct.newBuilder
-    nStructBuilder.setStruct(structBuilder.build)
-    for (name <- nameList) {
-      nStructBuilder.addNames(name)
-    }
-
-    val namedStructJson = SubstraitPlanPrinterUtil.substraitNamedStructToJson(
-      nStructBuilder
-        .build())
-    namedStructJson.replaceAll("\\\n", "").replaceAll(" ", "")
   }
 
   def isNullable(nullability: Type.Nullability): Boolean = {
@@ -259,7 +244,7 @@ object ConverterUtils extends Logging {
         val fieldNames = new JArrayList[String]
         for (structField <- s.fields) {
           fieldNodes.add(getTypeNode(structField.dataType, structField.nullable))
-          fieldNames.add(structField.name)
+          fieldNames.add(normalizeStructFieldName(structField.name))
         }
         TypeBuilder.makeStruct(nullable, fieldNodes, fieldNames)
       case _: NullType =>

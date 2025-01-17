@@ -18,7 +18,6 @@ package org.apache.spark.sql.hive
 
 import org.apache.gluten.backendsapi.BackendsApiManager
 import org.apache.gluten.execution.BasicScanExecTransformer
-import org.apache.gluten.extension.ValidationResult
 import org.apache.gluten.metrics.MetricsUpdater
 import org.apache.gluten.substrait.rel.LocalFilesNode.ReadFileFormat
 
@@ -45,7 +44,8 @@ import java.net.URI
 case class HiveTableScanExecTransformer(
     requestedAttributes: Seq[Attribute],
     relation: HiveTableRelation,
-    partitionPruningPred: Seq[Expression])(@transient session: SparkSession)
+    partitionPruningPred: Seq[Expression],
+    prunedOutput: Seq[Attribute] = Seq.empty[Attribute])(@transient session: SparkSession)
   extends AbstractHiveTableScanExec(requestedAttributes, relation, partitionPruningPred)(session)
   with BasicScanExecTransformer {
 
@@ -63,18 +63,19 @@ case class HiveTableScanExecTransformer(
 
   override def getMetadataColumns(): Seq[AttributeReference] = Seq.empty
 
-  override def outputAttributes(): Seq[Attribute] = output
+  override def outputAttributes(): Seq[Attribute] = {
+    if (prunedOutput.nonEmpty) {
+      prunedOutput
+    } else {
+      output
+    }
+  }
 
   override def getPartitions: Seq[InputPartition] = partitions
 
   override def getPartitionSchema: StructType = relation.tableMeta.partitionSchema
 
   override def getDataSchema: StructType = relation.tableMeta.dataSchema
-
-  override def getInputFilePathsInternal: Seq[String] = {
-    // FIXME how does a hive table expose file paths?
-    Seq.empty
-  }
 
   // TODO: get root paths from hive table.
   override def getRootPathsInternal: Seq[String] = Seq.empty
@@ -179,8 +180,8 @@ case class HiveTableScanExecTransformer(
 
 object HiveTableScanExecTransformer {
 
-  val NULL_VALUE: Char = 0x00
-  val DEFAULT_FIELD_DELIMITER: Char = 0x01
+  private val NULL_VALUE: Char = 0x00
+  private val DEFAULT_FIELD_DELIMITER: Char = 0x01
   val TEXT_INPUT_FORMAT_CLASS: Class[TextInputFormat] =
     Utils.classForName("org.apache.hadoop.mapred.TextInputFormat")
   val ORC_INPUT_FORMAT_CLASS: Class[OrcInputFormat] =
@@ -189,24 +190,6 @@ object HiveTableScanExecTransformer {
     Utils.classForName("org.apache.hadoop.hive.ql.io.parquet.MapredParquetInputFormat")
   def isHiveTableScan(plan: SparkPlan): Boolean = {
     plan.isInstanceOf[HiveTableScanExec]
-  }
-
-  def copyWith(plan: SparkPlan, newPartitionFilters: Seq[Expression]): SparkPlan = {
-    val hiveTableScanExec = plan.asInstanceOf[HiveTableScanExec]
-    hiveTableScanExec.copy(partitionPruningPred = newPartitionFilters)(sparkSession =
-      hiveTableScanExec.session)
-  }
-
-  def validate(plan: SparkPlan): ValidationResult = {
-    plan match {
-      case hiveTableScan: HiveTableScanExec =>
-        val hiveTableScanTransformer = new HiveTableScanExecTransformer(
-          hiveTableScan.requestedAttributes,
-          hiveTableScan.relation,
-          hiveTableScan.partitionPruningPred)(hiveTableScan.session)
-        hiveTableScanTransformer.doValidate()
-      case _ => ValidationResult.failed("Is not a Hive scan")
-    }
   }
 
   def apply(plan: SparkPlan): HiveTableScanExecTransformer = {

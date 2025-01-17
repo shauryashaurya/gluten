@@ -15,10 +15,10 @@
  * limitations under the License.
  */
 #pragma once
-#include <base/types.h>
-#include <Common/ThreadPool_fwd.h>
 #include <Interpreters/Context_fwd.h>
+#include <base/types.h>
 #include <Common/Stopwatch.h>
+#include <Common/ThreadPool_fwd.h>
 
 namespace local_engine
 {
@@ -102,13 +102,13 @@ public:
 class JobScheduler
 {
 public:
-    static JobScheduler& instance()
+    static JobScheduler & instance()
     {
         static JobScheduler global_job_scheduler;
         return global_job_scheduler;
     }
 
-    static void initialize(DB::ContextPtr context);
+    static void initialize(const DB::ContextPtr & context);
 
     JobId scheduleJob(Job&& job);
 
@@ -119,8 +119,9 @@ public:
     void addFinishedJob(const JobId& job_id);
 
     void cleanFinishedJobs();
+    ~JobScheduler();
 private:
-    JobScheduler() = default;
+    JobScheduler();
     std::unique_ptr<ThreadPool> thread_pool;
     std::unordered_map<JobId, JobContext> job_details;
     std::mutex job_details_mutex;
