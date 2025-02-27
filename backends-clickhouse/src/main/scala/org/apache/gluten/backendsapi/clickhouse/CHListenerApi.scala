@@ -50,7 +50,7 @@ class CHListenerApi extends ListenerApi with Logging {
     initialize(pc.conf, isDriver = true)
 
     val expressionExtensionTransformer = ExpressionUtil.extendedExpressionTransformer(
-      pc.conf.get(GlutenConfig.GLUTEN_EXTENDED_EXPRESSION_TRAN_CONF, "")
+      pc.conf.get(GlutenConfig.EXTENDED_EXPRESSION_TRAN_CONF.key, "")
     )
     if (expressionExtensionTransformer != null) {
       ExpressionExtensionTrait.expressionExtensionTransformer = expressionExtensionTransformer
@@ -75,7 +75,8 @@ class CHListenerApi extends ListenerApi with Logging {
     Convention.ensureSparkRowAndBatchTypesRegistered()
     CHBatch.ensureRegistered()
     SparkDirectoryUtil.init(conf)
-    val libPath = conf.get(GlutenConfig.GLUTEN_LIB_PATH, StringUtils.EMPTY)
+    val libPath =
+      conf.get(GlutenConfig.GLUTEN_LIB_PATH.key, GlutenConfig.GLUTEN_LIB_PATH.defaultValueString)
     if (StringUtils.isBlank(libPath)) {
       throw new IllegalArgumentException(
         "Please set spark.gluten.sql.columnar.libpath to enable clickhouse backend")
@@ -83,15 +84,22 @@ class CHListenerApi extends ListenerApi with Logging {
     if (isDriver) {
       JniLibLoader.loadFromPath(libPath, true)
     } else {
-      val executorLibPath = conf.get(GlutenConfig.GLUTEN_EXECUTOR_LIB_PATH, libPath)
+      val executorLibPath = conf.get(GlutenConfig.GLUTEN_EXECUTOR_LIB_PATH.key, libPath)
       JniLibLoader.loadFromPath(executorLibPath, true)
     }
     // Add configs
-    import org.apache.gluten.backendsapi.clickhouse.CHConf._
+    import org.apache.gluten.backendsapi.clickhouse.CHConfig._
     conf.setCHConfig(
       "timezone" -> conf.get("spark.sql.session.timeZone", TimeZone.getDefault.getID),
       "local_engine.settings.log_processors_profiles" -> "true")
     conf.setCHSettings("spark_version", SPARK_VERSION)
+    if (!conf.contains(RuntimeSettings.ENABLE_MEMORY_SPILL_SCHEDULER.key)) {
+      // Enable adaptive memory spill scheduler for native by default
+      conf.set(
+        RuntimeSettings.ENABLE_MEMORY_SPILL_SCHEDULER.key,
+        RuntimeSettings.ENABLE_MEMORY_SPILL_SCHEDULER.defaultValueString)
+    }
+
     // add memory limit for external sort
     if (conf.getLong(RuntimeSettings.MAX_BYTES_BEFORE_EXTERNAL_SORT.key, -1) < 0) {
       if (conf.getBoolean("spark.memory.offHeap.enabled", defaultValue = false)) {

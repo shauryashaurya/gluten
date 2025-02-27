@@ -126,8 +126,12 @@ DB::QueryPlanPtr MergeTreeRelParser::parseReadRel(
         LOG_DEBUG(getLogger("SerializedPlanParser"), "Try to read ({}) instead of empty header", one_column_name_type.front().dump());
     }
 
+    std::vector<DataPartPtr> selected_parts = StorageMergeTreeFactory::getDataPartsByNames(
+        storage->getStorageID(), merge_tree_table.snapshot_id, merge_tree_table.getPartNames());
+
     for (const auto & [name, sizes] : storage->getColumnSizes())
         column_sizes[name] = sizes.data_compressed;
+
     auto storage_snapshot = std::make_shared<StorageSnapshot>(*storage, storage->getInMemoryMetadataPtr());
     auto names_and_types_list = input.getNamesAndTypesList();
 
@@ -141,9 +145,6 @@ DB::QueryPlanPtr MergeTreeRelParser::parseReadRel(
         query_info->prewhere_info = parsePreWhereInfo(rel.filter(), input);
     }
 
-    std::vector<DataPartPtr> selected_parts = StorageMergeTreeFactory::getDataPartsByNames(
-        storage->getStorageID(), merge_tree_table.snapshot_id, merge_tree_table.getPartNames());
-
     auto read_step = storage->reader.readFromParts(
         selected_parts,
         storage->getMutationsSnapshot({}),
@@ -154,7 +155,7 @@ DB::QueryPlanPtr MergeTreeRelParser::parseReadRel(
         context->getSettingsRef()[Setting::max_block_size],
         1);
 
-    auto * source_step_with_filter = static_cast<SourceStepWithFilter *>(read_step.get());
+    auto * source_step_with_filter = static_cast<SourceStepWithFilterBase *>(read_step.get());
     if (const auto & storage_prewhere_info = query_info->prewhere_info)
     {
         source_step_with_filter->addFilter(storage_prewhere_info->prewhere_actions.clone(), storage_prewhere_info->prewhere_column_name);

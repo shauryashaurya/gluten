@@ -1970,11 +1970,11 @@ class MiscOperatorSuite extends VeloxWholeStageTransformerSuite with AdaptiveSpa
   }
 
   test("test 'spark.gluten.enabled'") {
-    withSQLConf(GlutenConfig.GLUTEN_ENABLED_KEY -> "true") {
+    withSQLConf(GlutenConfig.GLUTEN_ENABLED.key -> "true") {
       runQueryAndCompare("select * from lineitem limit 1") {
         checkGlutenOperatorMatch[FileSourceScanExecTransformer]
       }
-      withSQLConf(GlutenConfig.GLUTEN_ENABLED_KEY -> "false") {
+      withSQLConf(GlutenConfig.GLUTEN_ENABLED.key -> "false") {
         runQueryAndCompare("select * from lineitem limit 1") {
           checkSparkOperatorMatch[FileSourceScanExec]
         }
@@ -1982,6 +1982,12 @@ class MiscOperatorSuite extends VeloxWholeStageTransformerSuite with AdaptiveSpa
       runQueryAndCompare("select * from lineitem limit 1") {
         checkGlutenOperatorMatch[FileSourceScanExecTransformer]
       }
+    }
+  }
+
+  test("support null type in aggregate") {
+    runQueryAndCompare("SELECT max(null), min(null) from range(10)".stripMargin) {
+      checkGlutenOperatorMatch[HashAggregateExecTransformer]
     }
   }
 }

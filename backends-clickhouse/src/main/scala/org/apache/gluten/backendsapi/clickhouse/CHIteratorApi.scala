@@ -73,6 +73,7 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       splitInfoByteArray: Array[Array[Byte]],
       wsPlan: Array[Byte],
       materializeInput: Boolean,
+      partitionIndex: Int,
       inputIterators: Seq[Iterator[ColumnarBatch]]): BatchIterator = {
 
     /** Generate closeable ColumnBatch iterator. */
@@ -88,7 +89,8 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       wsPlan,
       splitInfoByteArray,
       listIterator,
-      materializeInput
+      materializeInput,
+      partitionIndex
     )
 
   }
@@ -230,28 +232,31 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
   override def genPartitions(
       wsCtx: WholeStageTransformContext,
       splitInfos: Seq[Seq[SplitInfo]],
-      scans: Seq[BasicScanExecTransformer]): Seq[BaseGlutenPartition] = {
+      leaves: Seq[LeafTransformSupport]): Seq[BaseGlutenPartition] = {
     // Only serialize plan once, save lots time when plan is complex.
     val planByteArray = wsCtx.root.toProtobuf.toByteArray
     splitInfos.zipWithIndex.map {
       case (splits, index) =>
-        val (splitInfosByteArray, files) = splits.zipWithIndex.map {
+        val splitInfosByteArray = splits.zipWithIndex.map {
           case (split, i) =>
             split match {
-              case filesNode: LocalFilesNode =>
-                setFileSchemaForLocalFiles(filesNode, scans(i))
-                (filesNode.toProtobuf.toByteArray, filesNode.getPaths.asScala.toSeq)
+              case filesNode: LocalFilesNode if leaves(i).isInstanceOf[BasicScanExecTransformer] =>
+                setFileSchemaForLocalFiles(
+                  filesNode,
+                  leaves(i).asInstanceOf[BasicScanExecTransformer])
+                filesNode.toProtobuf.toByteArray
               case extensionTableNode: ExtensionTableNode =>
-                (extensionTableNode.toProtobuf.toByteArray, extensionTableNode.getPartList)
+                extensionTableNode.toProtobuf.toByteArray
+              case kafkaSourceNode: StreamKafkaSourceNode =>
+                kafkaSourceNode.toProtobuf.toByteArray
             }
-        }.unzip
+        }
 
         GlutenPartition(
           index,
           planByteArray,
           splitInfosByteArray.toArray,
-          locations = splits.flatMap(_.preferredLocations().asScala).toArray,
-          files.flatten.toArray
+          locations = splits.flatMap(_.preferredLocations().asScala).toArray
         )
     }
   }
@@ -287,7 +292,13 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
         pipelineTime,
         updateNativeMetrics,
         Some(updateInputMetrics),
-        createNativeIterator(splitInfoByteArray, wsPlan, materializeInput, inputIterators))
+        createNativeIterator(
+          splitInfoByteArray,
+          wsPlan,
+          materializeInput,
+          partitionIndex,
+          inputIterators)
+      )
     )
   }
 
@@ -315,7 +326,13 @@ class CHIteratorApi extends IteratorApi with Logging with LogLevelUtil {
       pipelineTime,
       updateNativeMetrics,
       None,
-      createNativeIterator(splitInfoByteArray, wsPlan, materializeInput, inputIterators))
+      createNativeIterator(
+        splitInfoByteArray,
+        wsPlan,
+        materializeInput,
+        partitionIndex,
+        inputIterators)
+    )
   }
 
 }

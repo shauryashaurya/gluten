@@ -199,7 +199,7 @@ trait SparkPlanExecApi {
       substraitExprName: String,
       child: ExpressionTransformer,
       original: TryEval): ExpressionTransformer = {
-    throw new GlutenNotSupportException("try_eval is not supported")
+    throw new GlutenNotSupportException(s"try_eval(${original.child.prettyName}) is not supported")
   }
 
   def genArithmeticTransformer(
@@ -468,7 +468,6 @@ trait SparkPlanExecApi {
       windowExpressionNodes: JList[WindowFunctionNode],
       originalInputAttributes: Seq[Attribute],
       args: JMap[String, JLong]): Unit = {
-
     windowExpression.map {
       windowExpr =>
         val aliasExpr = windowExpr.asInstanceOf[Alias]
@@ -694,4 +693,13 @@ trait SparkPlanExecApi {
       limitExpr: ExpressionTransformer,
       original: StringSplit): ExpressionTransformer =
     GenericExpressionTransformer(substraitExprName, Seq(srcExpr, regexExpr, limitExpr), original)
+
+  def genColumnarRangeExec(
+      start: Long,
+      end: Long,
+      step: Long,
+      numSlices: Int,
+      numElements: BigInt,
+      outputAttributes: Seq[Attribute],
+      child: Seq[SparkPlan]): ColumnarRangeBaseExec
 }

@@ -1036,6 +1036,8 @@ class VeloxTestSettings extends BackendTestSettings {
     // The describe issue is just fixed by https://github.com/apache/spark/pull/40914.
     // We can enable the below test for spark 3.4 and higher versions.
     .excludeGlutenTest("describe")
+    // Rewrite this test since it checks the physical operator which is changed in Gluten
+    .exclude("SPARK-27439: Explain result should match collected result after view change")
   enableSuite[GlutenDataFrameTimeWindowingSuite]
   enableSuite[GlutenDataFrameTungstenSuite]
   enableSuite[GlutenDataFrameWindowFunctionsSuite]
@@ -1070,8 +1072,6 @@ class VeloxTestSettings extends BackendTestSettings {
     .exclude("to_unix_timestamp")
     // Unsupported datetime format: specifier X is not supported by velox.
     .exclude("to_timestamp with microseconds precision")
-    // Replaced by another test.
-    .exclude("to_timestamp")
     // Legacy mode is not supported, assuming this mode is not commonly used.
     .exclude("SPARK-30668: use legacy timestamp parser in to_timestamp")
     // Legacy mode is not supported and velox getTimestamp function does not throw

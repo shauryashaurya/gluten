@@ -20,6 +20,7 @@ import org.apache.gluten.backendsapi.ListenerApi
 import org.apache.gluten.columnarbatch.ArrowBatches.{ArrowJavaBatch, ArrowNativeBatch}
 import org.apache.gluten.columnarbatch.VeloxBatch
 import org.apache.gluten.config.GlutenConfig
+import org.apache.gluten.config.VeloxConfig._
 import org.apache.gluten.execution.datasource.GlutenFormatFactory
 import org.apache.gluten.expression.UDFMappings
 import org.apache.gluten.extension.columnar.transition.Convention
@@ -51,6 +52,27 @@ class VeloxListenerApi extends ListenerApi with Logging {
   override def onDriverStart(sc: SparkContext, pc: PluginContext): Unit = {
     val conf = pc.conf()
 
+    // When the Velox cache is enabled, the Velox file handle cache should also be enabled.
+    // Otherwise, a 'reference id not found' error may occur.
+    if (
+      conf.getBoolean(COLUMNAR_VELOX_CACHE_ENABLED.key, false) &&
+      !conf.getBoolean(COLUMNAR_VELOX_FILE_HANDLE_CACHE_ENABLED.key, false)
+    ) {
+      throw new IllegalArgumentException(
+        s"${COLUMNAR_VELOX_CACHE_ENABLED.key} and " +
+          s"${COLUMNAR_VELOX_FILE_HANDLE_CACHE_ENABLED.key} should be enabled together.")
+    }
+
+    if (
+      conf.getBoolean(COLUMNAR_VELOX_CACHE_ENABLED.key, false) &&
+      conf.getSizeAsBytes(LOAD_QUANTUM.key, LOAD_QUANTUM.defaultValueString) > 8 * 1024 * 1024
+    ) {
+      throw new IllegalArgumentException(
+        s"Velox currently only support up to 8MB load quantum size " +
+          s"on SSD cache enabled by ${COLUMNAR_VELOX_CACHE_ENABLED.key}, " +
+          s"User can set ${LOAD_QUANTUM.key} <= 8MB skip this error.")
+    }
+
     // Generate HDFS client configurations.
     HdfsConfGenerator.addHdfsClientToSparkWorkDirectory(sc)
 
@@ -74,7 +96,7 @@ class VeloxListenerApi extends ListenerApi with Logging {
           s" the recommended size ${ByteUnit.BYTE.toMiB(desiredOverheadSize)}MiB." +
           s" This may cause OOM.")
     }
-    conf.set(GlutenConfig.GLUTEN_OVERHEAD_SIZE_IN_BYTES_KEY, overheadSize.toString)
+    conf.set(GlutenConfig.COLUMNAR_OVERHEAD_SIZE_IN_BYTES.key, overheadSize.toString)
 
     // Sql table cache serializer.
     if (conf.getBoolean(GlutenConfig.COLUMNAR_TABLE_CACHE_ENABLED.key, defaultValue = false)) {
@@ -147,8 +169,8 @@ class VeloxListenerApi extends ListenerApi with Logging {
       )
 
     // Sets this configuration only once, since not undoable.
-    if (conf.getBoolean(GlutenConfig.GLUTEN_DEBUG_KEEP_JNI_WORKSPACE, defaultValue = false)) {
-      val debugDir = conf.get(GlutenConfig.GLUTEN_DEBUG_KEEP_JNI_WORKSPACE_DIR)
+    if (conf.getBoolean(GlutenConfig.DEBUG_KEEP_JNI_WORKSPACE.key, defaultValue = false)) {
+      val debugDir = conf.get(GlutenConfig.DEBUG_KEEP_JNI_WORKSPACE_DIR.key)
       JniWorkspace.enableDebug(debugDir)
     }
 
@@ -166,11 +188,11 @@ class VeloxListenerApi extends ListenerApi with Logging {
     SharedLibraryLoader.load(conf, loader)
 
     // Load backend libraries.
-    val libPath = conf.get(GlutenConfig.GLUTEN_LIB_PATH, StringUtils.EMPTY)
+    val libPath = conf.get(GlutenConfig.GLUTEN_LIB_PATH.key, StringUtils.EMPTY)
     if (StringUtils.isNotBlank(libPath)) { // Path based load. Ignore all other loadees.
       JniLibLoader.loadFromPath(libPath, false)
     } else {
-      val baseLibName = conf.get(GlutenConfig.GLUTEN_LIB_NAME, "gluten")
+      val baseLibName = conf.get(GlutenConfig.GLUTEN_LIB_NAME.key, "gluten")
       loader.load(s"$platformLibDir/${System.mapLibraryName(baseLibName)}", false)
       loader.load(s"$platformLibDir/${System.mapLibraryName(VeloxBackend.BACKEND_NAME)}", false)
     }
@@ -180,7 +202,7 @@ class VeloxListenerApi extends ListenerApi with Logging {
 
     // Workaround for https://github.com/apache/incubator-gluten/issues/7837
     if (isDriver && !inLocalMode(conf)) {
-      parsed += (GlutenConfig.COLUMNAR_VELOX_CACHE_ENABLED.key -> "false")
+      parsed += (COLUMNAR_VELOX_CACHE_ENABLED.key -> "false")
     }
     NativeBackendInitializer.forBackend(VeloxBackend.BACKEND_NAME).initialize(parsed)
 
