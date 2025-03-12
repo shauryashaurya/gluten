@@ -288,7 +288,8 @@ class Spark33Shims extends SparkShims {
 
   override def supportDuplicateReadingTracking: Boolean = true
 
-  def getFileStatus(partition: PartitionDirectory): Seq[FileStatus] = partition.files
+  def getFileStatus(partition: PartitionDirectory): Seq[(FileStatus, Map[String, Any])] =
+    partition.files.map(f => (f, Map.empty[String, Any]))
 
   def isFileSplittable(
       relation: HadoopFsRelation,
@@ -305,7 +306,8 @@ class Spark33Shims extends SparkShims {
       filePath: Path,
       isSplitable: Boolean,
       maxSplitBytes: Long,
-      partitionValues: InternalRow): Seq[PartitionedFile] = {
+      partitionValues: InternalRow,
+      metadata: Map[String, Any] = Map.empty): Seq[PartitionedFile] = {
     PartitionedFileUtil.splitFiles(
       sparkSession,
       file,
@@ -332,8 +334,6 @@ class Spark33Shims extends SparkShims {
   override def getKeyGroupedPartitioning(batchScan: BatchScanExec): Option[Seq[Expression]] = {
     batchScan.keyGroupedPartitioning
   }
-  override def getCommonPartitionValues(batchScan: BatchScanExec): Option[Seq[(InternalRow, Int)]] =
-    null
 
   override def extractExpressionTimestampAddUnit(exp: Expression): Option[Seq[String]] = {
     exp match {
@@ -395,5 +395,7 @@ class Spark33Shims extends SparkShims {
         false
     }
   }
+
+  override def isColumnarLimitExecSupported(): Boolean = true
 
 }

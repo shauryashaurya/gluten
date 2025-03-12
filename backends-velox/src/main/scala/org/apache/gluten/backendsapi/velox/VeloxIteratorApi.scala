@@ -65,7 +65,8 @@ class VeloxIteratorApi extends IteratorApi with Logging {
           fileSizes,
           modificationTimes,
           partitionColumns,
-          metadataColumns) =
+          metadataColumns,
+          otherMetadataColumns) =
           constructSplitInfo(partitionSchema, f.files, metadataColumnNames)
         val preferredLocations =
           SoftAffinity.getFilePartitionLocations(f)
@@ -80,11 +81,55 @@ class VeloxIteratorApi extends IteratorApi with Logging {
           metadataColumns,
           fileFormat,
           preferredLocations.toList.asJava,
-          mapAsJavaMap(properties)
+          mapAsJavaMap(properties),
+          otherMetadataColumns
         )
       case _ =>
         throw new UnsupportedOperationException(s"Unsupported input partition.")
     }
+  }
+
+  override def genSplitInfoForPartitions(
+      partitionIndex: Int,
+      partitions: Seq[InputPartition],
+      partitionSchema: StructType,
+      fileFormat: ReadFileFormat,
+      metadataColumnNames: Seq[String],
+      properties: Map[String, String]): SplitInfo = {
+    val partitionFiles = partitions.flatMap {
+      p =>
+        if (!p.isInstanceOf[FilePartition]) {
+          throw new UnsupportedOperationException(
+            s"Unsupported input partition ${p.getClass.getName}.")
+        }
+        p.asInstanceOf[FilePartition].files
+    }.toArray
+    val locations =
+      partitions.flatMap(p => SoftAffinity.getFilePartitionLocations(p.asInstanceOf[FilePartition]))
+    val (
+      paths,
+      starts,
+      lengths,
+      fileSizes,
+      modificationTimes,
+      partitionColumns,
+      metadataColumns,
+      otherMetadataColumns) =
+      constructSplitInfo(partitionSchema, partitionFiles, metadataColumnNames)
+    LocalFilesBuilder.makeLocalFiles(
+      partitionIndex,
+      paths,
+      starts,
+      lengths,
+      fileSizes,
+      modificationTimes,
+      partitionColumns,
+      metadataColumns,
+      fileFormat,
+      locations.toList.asJava,
+      mapAsJavaMap(properties),
+      otherMetadataColumns
+    )
   }
 
   /** Generate native row partition. */
@@ -117,6 +162,7 @@ class VeloxIteratorApi extends IteratorApi with Logging {
     val modificationTimes = new JArrayList[JLong]()
     val partitionColumns = new JArrayList[JMap[String, String]]
     val metadataColumns = new JArrayList[JMap[String, String]]
+    val otherMetadataColumns = new JArrayList[JMap[String, Object]]
     files.foreach {
       file =>
         paths.add(unescapePathName(file.filePath.toString))
@@ -156,8 +202,18 @@ class VeloxIteratorApi extends IteratorApi with Logging {
           partitionColumn.put(schema.names(i), partitionColumnValue)
         }
         partitionColumns.add(partitionColumn)
+        otherMetadataColumns.add(
+          SparkShimLoader.getSparkShims.getOtherConstantMetadataColumnValues(file))
     }
-    (paths, starts, lengths, fileSizes, modificationTimes, partitionColumns, metadataColumns)
+    (
+      paths,
+      starts,
+      lengths,
+      fileSizes,
+      modificationTimes,
+      partitionColumns,
+      metadataColumns,
+      otherMetadataColumns)
   }
 
   override def injectWriteFilesTempPath(path: String, fileName: String): Unit = {
